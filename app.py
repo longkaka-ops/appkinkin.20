@@ -18,7 +18,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard  # Thư viện Copy nút b
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Kinkin Data Manager (Pro)", layout="wide", page_icon="🚀")
 
-# 🔐 DANH SÁCH USER (Demo - Nên chuyển sang secrets nếu cần bảo mật cao hơn)
+# 🔐 DANH SÁCH USER (Demo)
 AUTHORIZED_USERS = {
     "admin": "Admin_Master",
     "team_hn": "Team_HaNoi",
@@ -74,7 +74,7 @@ def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
     
-    # Auto login qua URL param (Dùng cho debug hoặc link nhanh)
+    # Auto login qua URL param
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
@@ -116,7 +116,7 @@ def get_sh_with_retry(creds, sheet_id_or_key):
             time.sleep((2 ** i) + 0.5) 
     return None
 
-# --- 3. CORE LOGIC (V2 - UPGRADED) ---
+# --- 3. CORE LOGIC (V2 - FIXED) ---
 
 def fetch_data_v2(row_config, creds):
     """
@@ -157,7 +157,7 @@ def fetch_data_v2(row_config, creds):
                 rows = data[1:]
                 df = pd.DataFrame(rows, columns=headers)
             else:
-                # Nếu không lấy header, coi dòng đầu là dữ liệu luôn, đặt tên cột tự động 0,1,2...
+                # Nếu không lấy header, coi dòng đầu là dữ liệu luôn
                 df = pd.DataFrame(data)
 
             # 1. Cắt Vùng (Range)
@@ -174,8 +174,7 @@ def fetch_data_v2(row_config, creds):
             # 2. Lọc Dữ Liệu (Task 3)
             if filter_query and filter_query.lower() not in ['nan', '']:
                 try:
-                    # Convert các cột sang số nếu cần để lọc số học (Optional)
-                    # Ở đây lọc string cơ bản. VD: `Cot_A == 'HN'`
+                    # VD: `Cot_A == 'HN'`
                     original_rows = len(df)
                     df = df.query(filter_query)
                 except Exception as e:
@@ -201,9 +200,7 @@ def fetch_data_v2(row_config, creds):
 
 def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode="APPEND"):
     """
-    Hàm ghi dữ liệu thông minh (Task 11 & 12):
-    - APPEND: Logic cũ (Gom nhiều file, thêm cột Link, xóa cũ ghi mới).
-    - TABLE: Logic mới (Xóa trắng vùng dữ liệu, giữ Header, giữ công thức cột bên cạnh).
+    Hàm ghi dữ liệu thông minh (Task 11 & 12) - Đã Fix lỗi IncorrectCellLabel
     """
     try:
         target_id = extract_id(target_link)
@@ -221,30 +218,35 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
             # Gộp tất cả DF
             combined_df = pd.concat([t[0] for t in tasks_list], ignore_index=True)
             
-            # Xóa cột tạm __Link_Source__ nếu user không muốn (hoặc giữ lại tùy nhu cầu)
-            # Ở mode Table thường không cần cột Link source vì data thuần
+            # Xóa cột tạm hệ thống
             cols_to_drop = [c for c in ['__Link_Source__', '__Thang__'] if c in combined_df.columns]
             combined_df = combined_df.drop(columns=cols_to_drop)
 
-            if combined_df.empty: return True, "Data sau lọc bị rỗng"
+            # --- FIX: Kiểm tra kỹ cột trước khi tính toán ---
+            if combined_df.empty or len(combined_df.columns) == 0:
+                return True, "Data sau khi lọc bị rỗng (Không có cột hiển thị)"
 
             # Tìm vùng cần xóa (Từ A2 -> Cột cuối cùng của Data)
-            num_rows_new = len(combined_df)
             num_cols = len(combined_df.columns)
-            last_col_char = gspread.utils.rowcol_to_a1(1, num_cols).replace("1", "")
+            
+            # Tính chữ cái của cột cuối cùng.
+            # FIX: Đảm bảo num_cols > 0 để tránh lỗi IncorrectCellLabel
+            last_col_char = gspread.utils.rowcol_to_a1(1, max(1, num_cols)).replace("1", "")
             
             # Xóa data cũ (Batch clear nhanh hơn loop)
             # Lưu ý: Xóa từ dòng 2 để giữ Header
-            wks.batch_clear([f"A2:{last_col_char}"])
+            try:
+                wks.batch_clear([f"A2:{last_col_char}"])
+            except Exception as e:
+                print(f"Warning Clear: {e}")
             
             # Ghi data mới vào từ A2
             set_with_dataframe(wks, combined_df, row=2, col=1, include_index=False, include_column_header=False)
             
-            return True, f"Đã làm mới Table ({num_rows_new} dòng). Mode: TABLE"
+            return True, f"Đã làm mới Table ({len(combined_df)} dòng). Mode: TABLE"
 
         # --- MODE 2: APPEND (Gom nhiều nguồn - Logic cũ) ---
         else:
-            # Logic cũ: Phải có cột Link Source để định danh dòng nào của file nào
             links_to_remove = [t[1] for t in tasks_list if t[1]]
             
             # 1. Đọc Header hiện tại để tìm cột 'Link file nguồn'
@@ -265,7 +267,6 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
                             rows_to_delete.append(i + 1)
                     
                     if rows_to_delete:
-                        # Gom nhóm xóa ngược để không lệch index
                         rows_to_delete.sort()
                         ranges = []
                         start = rows_to_delete[0]; end = start
@@ -286,7 +287,6 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
                 except: pass
 
             # Chuẩn bị data mới
-            # Đổi tên cột tạm thành cột hiển thị đẹp hơn
             final_df_list = []
             for df, src_link in tasks_list:
                 df = df.rename(columns={'__Link_Source__': col_link_name, '__Thang__': 'Tháng'})
@@ -301,18 +301,11 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
                 set_with_dataframe(wks, combined_df, row=1, col=1)
                 return True, f"Tạo mới & Ghi {len(combined_df)} dòng"
             else:
-                # Align cột theo header cũ
-                # Các cột mới chưa có trong Header cũ sẽ được thêm vào sau
                 all_cols = existing_headers + [c for c in combined_df.columns if c not in existing_headers]
-                
-                # Update Header mới nếu có cột mới
                 if len(all_cols) > len(existing_headers):
                     wks.update("A1", [all_cols])
                 
-                # Reindex data theo cột
                 combined_df = combined_df.reindex(columns=all_cols, fill_value="")
-                
-                # Append vào cuối
                 wks.append_rows(combined_df.values.tolist())
                 return True, f"Cập nhật (+{len(combined_df)} dòng). Mode: APPEND"
 
@@ -457,10 +450,8 @@ def process_pipeline_ui(rows_to_run, user_id, block_name_run, status_container):
             # 3. UPDATE RESULT MAP
             status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
             
-            # Gán kết quả cho tất cả link nguồn trong nhóm này
             for row in group_rows:
                 s_link = str(row.get(COL_SRC_LINK, '')).strip()
-                # Tính số dòng riêng của từng nguồn
                 row_count = 0
                 for d, l in tasks_list:
                     if l == s_link: row_count = len(d)
@@ -486,18 +477,16 @@ def load_full_config(creds):
     df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     df = df.dropna(how='all')
     
-    # Định nghĩa các cột chuẩn (Bao gồm cột cũ và cột mới)
     required_cols = [
         COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, 
         COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
         COL_RESULT, COL_LOG_ROW, 
-        COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE # New cols
+        COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE
     ]
     
     for c in required_cols:
         if c not in df.columns: df[c] = ""
     
-    # Set default values
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', 'Default_Block').fillna('Default_Block')
     df[COL_HEADER] = df[COL_HEADER].replace('', 'TRUE').fillna('TRUE')
     df[COL_MODE] = df[COL_MODE].replace('', 'APPEND').fillna('APPEND')
@@ -509,26 +498,20 @@ def save_block_config(df_current_ui, current_block_name, creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     
-    # Tải toàn bộ data trên server về để merge
     df_full_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     df_full_server = df_full_server.dropna(how='all')
     
-    # Chuẩn hóa cột server
     if COL_BLOCK_NAME not in df_full_server.columns: df_full_server[COL_BLOCK_NAME] = 'Default_Block'
     
-    # Loại bỏ dữ liệu cũ của Block này
     df_other_blocks = df_full_server[df_full_server[COL_BLOCK_NAME] != current_block_name]
     
-    # Chuẩn bị dữ liệu mới từ UI
     df_to_save = df_current_ui.copy()
     if 'STT' in df_to_save.columns: df_to_save = df_to_save.drop(columns=['STT'])
     df_to_save[COL_BLOCK_NAME] = current_block_name 
     
-    # Gộp
     df_final = pd.concat([df_other_blocks, df_to_save], ignore_index=True)
     df_final = df_final.astype(str).replace(['nan', 'None', '<NA>'], '')
     
-    # Đảm bảo đủ cột khi lưu
     required_cols = [
         COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, 
         COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
@@ -538,7 +521,7 @@ def save_block_config(df_current_ui, current_block_name, creds):
     for c in required_cols:
         if c not in df_final.columns: df_final[c] = ""
         
-    df_final = df_final[required_cols] # Reorder
+    df_final = df_final[required_cols]
     
     wks.clear()
     wks.update([df_final.columns.tolist()] + df_final.values.tolist())
@@ -594,12 +577,10 @@ def main_ui():
         
         selected_block = st.selectbox("Chọn Khối làm việc:", unique_blocks, key="sb_block_select")
         
-        # Thao tác Khối
         with st.expander("Thao tác Khối (Thêm/Xóa)"):
             new_block_input = st.text_input("Tên khối mới:")
             if st.button("➕ Thêm Khối"):
                 if new_block_input and new_block_input not in unique_blocks:
-                    # Tạo dòng mẫu
                     new_row = {c: "" for c in st.session_state['df_full_config'].columns}
                     new_row[COL_BLOCK_NAME] = new_block_input
                     new_row[COL_STATUS] = 'Chưa chốt & đang cập nhật'
@@ -613,12 +594,9 @@ def main_ui():
             
             if st.button("🗑️ Xóa Khối Này", type="primary"):
                 if len(unique_blocks) > 1:
-                    # Xóa logic local & server
                     st.session_state['df_full_config'] = st.session_state['df_full_config'][
                         st.session_state['df_full_config'][COL_BLOCK_NAME] != selected_block
                     ]
-                    # Save rỗng để xóa trên server (thực tế cần hàm delete riêng nhưng save đè cũng được)
-                    # Ở đây gọi hàm save_block nhưng truyền df rỗng cho block đó -> logic save_block sẽ xóa nó
                     empty_df = pd.DataFrame(columns=st.session_state['df_full_config'].columns)
                     save_block_config(empty_df, selected_block, creds)
                     st.rerun()
@@ -630,40 +608,28 @@ def main_ui():
     # --- MAIN: DATA EDITOR ---
     st.subheader(f"⚡ Cấu hình chi tiết: {selected_block}")
     
-    # Lọc data cho block hiện tại
     df_display = st.session_state['df_full_config'][
         st.session_state['df_full_config'][COL_BLOCK_NAME] == selected_block
     ].copy().reset_index(drop=True)
     
-    # Thêm cột STT ảo
     df_display.insert(0, 'STT', range(1, len(df_display) + 1))
     
-    # Cấu hình hiển thị Editor
     column_config = {
         "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
         COL_STATUS: st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True, width="medium"),
-        
-        # Cột Input Chính
         COL_SRC_LINK: st.column_config.TextColumn("Link Nguồn", width="large", help="Link Google Sheet chứa dữ liệu"),
         COL_TGT_LINK: st.column_config.TextColumn("Link Đích", width="large", help="Link Google Sheet nhận dữ liệu"),
         COL_SRC_SHEET: st.column_config.TextColumn("Sheet Nguồn", width="medium"),
         COL_TGT_SHEET: st.column_config.TextColumn("Sheet Đích", width="medium"),
-        
-        # Cột Nâng Cao (Task 3, 10, 11)
         COL_MODE: st.column_config.SelectboxColumn("Chế Độ Ghi", options=["APPEND", "TABLE"], width="medium", help="APPEND: Nối thêm | TABLE: Xóa cũ ghi mới (Bảo toàn công thức)"),
         COL_FILTER: st.column_config.TextColumn("Bộ Lọc (Query)", width="medium", help="VD: Cot_A == 'HN'"),
         COL_HEADER: st.column_config.CheckboxColumn("Lấy Header?", default=True),
-        
-        # Cột Thông tin
         COL_RESULT: st.column_config.TextColumn("Kết quả chạy", disabled=True),
         COL_LOG_ROW: st.column_config.TextColumn("Log dòng", disabled=True),
         COL_NOTE: st.column_config.TextColumn("Ghi chú", width="large"),
-        
-        # Ẩn cột hệ thống
         COL_BLOCK_NAME: None
     }
     
-    # Thứ tự hiển thị
     col_order = [
         "STT", COL_STATUS, COL_MODE, 
         COL_SRC_LINK, COL_SRC_SHEET, 
@@ -688,14 +654,12 @@ def main_ui():
     
     with c_run:
         if st.button(f"▶️ CHẠY KHỐI: {selected_block}", type="primary", use_container_width=True):
-            # Lọc các dòng cần chạy
             rows_run = edited_df[edited_df[COL_STATUS] == "Chưa chốt & đang cập nhật"].to_dict('records')
             rows_run = [r for r in rows_run if len(str(r.get(COL_SRC_LINK, ''))) > 5]
             
             if not rows_run:
                 st.warning("⚠️ Không có dòng nào ở trạng thái 'Chưa chốt' để chạy.")
             else:
-                # Task 4: Real-time Status UI
                 with st.status(f"🚀 Đang khởi động xử lý {len(rows_run)} tasks...", expanded=True) as status:
                     status.write("🔐 Đang kiểm tra quyền truy cập...")
                     ok_check, err_list = check_permissions_strict(rows_run, creds)
@@ -708,21 +672,18 @@ def main_ui():
                         status.write("✅ Quyền OK. Bắt đầu Pipeline...")
                         start_t = time.time()
                         
-                        # Gọi Pipeline
                         all_ok, results_map, total_rows = process_pipeline_ui(rows_run, user_id, selected_block, status)
                         
                         elapsed = time.time() - start_t
                         
-                        # Cập nhật kết quả lên bảng UI
                         for idx, row in edited_df.iterrows():
                             s_link = str(row.get(COL_SRC_LINK, '')).strip()
                             if s_link in results_map:
                                 msg, log_info = results_map[s_link]
                                 if row[COL_STATUS] == "Chưa chốt & đang cập nhật":
                                     edited_df.at[idx, COL_RESULT] = msg
-                                edited_df.at[idx, COL_LOG_ROW] = log_info # Đây có thể là số dòng hoặc thông báo chi tiết
+                                edited_df.at[idx, COL_LOG_ROW] = log_info
 
-                        # Tự động lưu sau khi chạy xong
                         status.write("💾 Đang lưu kết quả...")
                         save_block_config(edited_df, selected_block, creds)
                         
@@ -734,7 +695,7 @@ def main_ui():
     with c_save:
         if st.button("💾 Lưu Cấu Hình", use_container_width=True):
             save_block_config(edited_df, selected_block, creds)
-            del st.session_state['df_full_config'] # Clear cache để reload
+            del st.session_state['df_full_config']
             st.rerun()
 
     with c_check:
