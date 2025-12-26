@@ -6,6 +6,7 @@ import json
 import re
 import pytz
 import uuid
+import numpy as np
 from gspread_dataframe import set_with_dataframe, get_as_dataframe
 from datetime import datetime
 from google.oauth2 import service_account
@@ -13,7 +14,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V15 - Audit Log)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V16 - Log Chi Tiết)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -25,8 +26,8 @@ BOT_EMAIL_DISPLAY = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
 # Tên Sheet
 SHEET_CONFIG_NAME = "luu_cau_hinh" 
-SHEET_LOG_NAME = "log_lanthucthi"       # Log chạy job (cũ)
-SHEET_ACTIVITY_NAME = "log_hanh_vi"     # [MỚI] Log hành vi user
+SHEET_LOG_NAME = "log_lanthucthi"
+SHEET_ACTIVITY_NAME = "log_hanh_vi"
 SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
@@ -90,9 +91,8 @@ def get_sh_with_retry(creds, sheet_id_or_key):
             time.sleep((2 ** i) + 0.5) 
     return None
 
-# --- [MỚI] HỆ THỐNG LOG HÀNH VI (AUDIT LOG) ---
+# --- [LOG HÀNH VI] ---
 def log_user_action(creds, user_id, action, status=""):
-    """Ghi log hành vi người dùng vào sheet riêng"""
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_ACTIVITY_NAME)
@@ -103,31 +103,64 @@ def log_user_action(creds, user_id, action, status=""):
         tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
         time_now = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
         wks.append_row([time_now, user_id, action, status])
-    except Exception as e: print(f"Lỗi ghi log hành vi: {e}")
+    except Exception as e: print(f"Lỗi log: {e}")
 
 def fetch_activity_logs(creds, limit=50):
-    """Tải log hành vi để hiển thị"""
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_ACTIVITY_NAME)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         if df.empty: return pd.DataFrame()
-        # Đảo ngược để thấy mới nhất
         return df.tail(limit).iloc[::-1]
     except: return pd.DataFrame()
+
+# --- [HÀM MỚI] SO SÁNH THAY ĐỔI DỮ LIỆU ---
+def detect_changes(df_old, df_new):
+    """So sánh 2 dataframe để tìm ra dòng nào bị sửa, xóa, thêm"""
+    changes = []
+    
+    # 1. So sánh số lượng
+    len_old = len(df_old)
+    len_new = len(df_new)
+    
+    if len_new > len_old:
+        changes.append(f"Thêm {len_new - len_old} dòng mới")
+    elif len_new < len_old:
+        changes.append(f"Xóa {len_old - len_new} dòng")
+    
+    # 2. So sánh chi tiết các dòng tồn tại song song (theo index)
+    min_len = min(len_old, len_new)
+    cols_to_check = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER]
+    
+    for i in range(min_len):
+        row_old = df_old.iloc[i]
+        row_new = df_new.iloc[i]
+        
+        diffs = []
+        for col in cols_to_check:
+            val_old = str(row_old.get(col, '')).strip()
+            val_new = str(row_new.get(col, '')).strip()
+            if val_old != val_new:
+                # Rút gọn tên cột cho log đỡ dài
+                col_short = "LinkNguon" if col == COL_SRC_LINK else "LinkDich" if col == COL_TGT_LINK else col
+                diffs.append(f"{col_short}")
+        
+        if diffs:
+            changes.append(f"Sửa dòng {i+1} ({', '.join(diffs)})")
+            
+    if not changes: return "Không thay đổi nội dung chính"
+    return "; ".join(changes[:5]) + ("..." if len(changes) > 5 else "")
 
 # --- LOGIN ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
-    
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True
             st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
             return True
-            
     if st.session_state['logged_in']: return True
     
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -138,9 +171,7 @@ def check_login():
             if pwd in AUTHORIZED_USERS:
                 st.session_state['logged_in'] = True
                 st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
-                # Log login
-                creds = get_creds()
-                if creds: log_user_action(creds, AUTHORIZED_USERS[pwd], "Đăng nhập", "Thành công")
+                log_user_action(get_creds(), AUTHORIZED_USERS[pwd], "Đăng nhập", "OK")
                 st.rerun()
             else: st.error("Sai mật khẩu!")
     return False
@@ -162,27 +193,19 @@ def load_notes_data(creds):
 def save_notes_data(df_notes, creds, user_id):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
-        try: wks = sh.worksheet(SHEET_NOTE_NAME)
-        except: wks = sh.add_worksheet(SHEET_NOTE_NAME, rows=100, cols=5)
-        
+        wks = sh.worksheet(SHEET_NOTE_NAME)
         if not df_notes.empty:
             for idx, row in df_notes.iterrows():
                 if not row[NOTE_COL_ID] or str(row[NOTE_COL_ID]) == 'nan' or str(row[NOTE_COL_ID]) == '':
                     df_notes.at[idx, NOTE_COL_ID] = str(uuid.uuid4())[:8]
-        
         cols = [NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT]
         for c in cols:
             if c not in df_notes.columns: df_notes[c] = ""
         df_notes = df_notes[cols]
-        wks.clear()
-        wks.update([df_notes.columns.tolist()] + df_notes.astype(str).values.tolist())
-        
-        # Log hành vi
+        wks.clear(); wks.update([df_notes.columns.tolist()] + df_notes.astype(str).values.tolist())
         log_user_action(creds, user_id, "Cập nhật Note (Popup)", "Thành công")
         return True
-    except Exception as e:
-        st.error(f"Lỗi lưu note: {e}")
-        return False
+    except Exception as e: st.error(f"Lỗi: {e}"); return False
 
 # --- 4. CORE ETL ---
 def fetch_data_v2(row_config, creds):
@@ -388,10 +411,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
     if is_locked and locking_user != user_id and "Auto" not in user_id:
         return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy.", 0
     set_system_lock(creds, user_id, lock=True)
-    
-    # Log bắt đầu chạy
     log_user_action(creds, user_id, f"Chạy Job: {block_name_run}", "Đang chạy...")
-    
     try:
         if status_container: status_container.write("🔄 Đang phân nhóm dữ liệu...")
         grouped_tasks = defaultdict(list)
@@ -435,7 +455,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                 log_entries.append([time_now, row.get(COL_DATA_RANGE), row.get(COL_MONTH), user_id, s_link, target_link, target_sheet, row.get(COL_SRC_SHEET), status_str, str(cnt), "", block_name_run])
         
         write_detailed_log(creds, log_entries)
-        # Log kết thúc
         log_user_action(creds, user_id, f"Hoàn tất Job: {block_name_run}", f"Tổng {total_rows_all} dòng")
         return all_success, global_results_map, total_rows_all
     finally:
@@ -473,7 +492,6 @@ def delete_block_direct(block_name_to_delete, creds, user_id):
     for c in cols:
         if c not in df_new.columns: df_new[c] = ""
     wks.clear(); wks.update([cols] + df_new[cols].values.tolist())
-    # Log
     log_user_action(creds, user_id, f"Xóa khối: {block_name_to_delete}", "Thành công")
 
 def save_block_config_to_sheet(df_current_ui, current_block_name, creds, user_id):
@@ -482,20 +500,28 @@ def save_block_config_to_sheet(df_current_ui, current_block_name, creds, user_id
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: df_server[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
     
-    df_other = df_server[df_server[COL_BLOCK_NAME] != current_block_name]
+    # Lọc lấy data CŨ của block này trên server để so sánh
+    df_server_old_block = df_server[df_server[COL_BLOCK_NAME] == current_block_name].copy()
+    
+    # Data MỚI từ UI
     df_save = df_current_ui.copy()
     for c in ['STT', COL_COPY_FLAG]: 
         if c in df_save.columns: df_save = df_save.drop(columns=[c])
     df_save[COL_BLOCK_NAME] = current_block_name
     
+    # --- SO SÁNH & GHI LOG CHI TIẾT ---
+    change_msg = detect_changes(df_server_old_block, df_save)
+    log_user_action(creds, user_id, f"Sửa khối: {current_block_name}", change_msg)
+    
+    # Ghi đè
+    df_other = df_server[df_server[COL_BLOCK_NAME] != current_block_name]
     df_final = pd.concat([df_other, df_save], ignore_index=True).astype(str).replace(['nan', 'None'], '')
+    
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE]
     for c in cols:
         if c not in df_final.columns: df_final[c] = ""
     wks.clear(); wks.update([cols] + df_final[cols].values.tolist())
     st.toast(f"✅ Đã lưu cấu hình: {current_block_name}!", icon="💾")
-    # Log
-    log_user_action(creds, user_id, f"Lưu cấu hình: {current_block_name}", "Thành công")
 
 def rename_block_action(old_name, new_name, creds, user_id):
     if not new_name or new_name == old_name: return False
@@ -505,7 +531,6 @@ def rename_block_action(old_name, new_name, creds, user_id):
     if COL_BLOCK_NAME in df.columns:
         df.loc[df[COL_BLOCK_NAME] == old_name, COL_BLOCK_NAME] = new_name
         wks.clear(); wks.update([df.columns.tolist()] + df.fillna('').values.tolist())
-    # Log
     log_user_action(creds, user_id, f"Đổi tên: {old_name} -> {new_name}", "Thành công")
     return True
 
@@ -517,7 +542,6 @@ def save_full_direct(df_full, creds, user_id):
     for c in cols:
          if c not in df_full.columns: df_full[c] = ""
     wks.clear(); wks.update([cols] + df_full[cols].values.tolist())
-    # Log
     log_user_action(creds, user_id, "Lưu toàn bộ hệ thống", "Thành công")
 
 # --- 8. POPUP QUẢN LÝ NOTE ---
@@ -554,9 +578,9 @@ def show_note_popup(creds, all_blocks, user_id):
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    ### Hướng Dẫn (V15):
-    1. **Note_Tung_Khoi:** Bấm nút để thêm ghi chú.
-    2. **Nhật ký hành vi:** Xem ở cuối trang.
+    ### Hướng Dẫn (V16):
+    1. **Log chi tiết:** Hệ thống sẽ ghi lại bạn đã sửa link nào, dòng nào khi ấn Lưu.
+    2. **Note:** Quản lý ghi chú trong Popup.
     """)
 
 def main_ui():
@@ -565,7 +589,7 @@ def main_ui():
     creds = get_creds()
     
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("🛡️ Kinkin Manager (V15 - Log)"); st.caption(f"User: {user_id}")
+    with c1: st.title("🛡️ Kinkin Manager (V16 - Detail Log)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
@@ -666,7 +690,7 @@ def main_ui():
         },
         use_container_width=True, 
         num_rows="dynamic",
-        key=f"editor_v15"
+        key=f"editor_v16"
     )
 
     # --- LOGIC UPDATE ---
