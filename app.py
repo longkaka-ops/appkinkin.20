@@ -4,7 +4,7 @@ import time
 import gspread
 import json
 import re
-import pytz  # <--- ĐÃ BỔ SUNG THƯ VIỆN NÀY
+import pytz
 from gspread_dataframe import set_with_dataframe, get_as_dataframe
 from datetime import datetime
 from google.oauth2 import service_account
@@ -12,7 +12,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V10 - Stable)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V11 - Focus Fix)", layout="wide", page_icon="🎯")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -289,7 +289,7 @@ def save_sys_schedule(df_schedule, creds):
     wks.clear()
     wks.update([df_schedule.columns.tolist()] + df_schedule.fillna('').values.tolist())
 
-# --- 5. PIPELINE & PERMISSIONS ---
+# --- 5. PIPELINE ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -389,43 +389,31 @@ def delete_block_direct(block_name_to_delete, creds):
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: return
-    
     df_new = df_server[df_server[COL_BLOCK_NAME] != block_name_to_delete]
     
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_new.columns: df_new[c] = ""
-    
-    wks.clear()
-    wks.update([cols] + df_new[cols].values.tolist())
+    wks.clear(); wks.update([cols] + df_new[cols].values.tolist())
 
-# Chỉ lưu khi ấn nút (Merge an toàn)
 def save_block_config_to_sheet(df_current_ui, current_block_name, creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
-    
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: df_server[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
     
-    # Loại bỏ block cũ
     df_other = df_server[df_server[COL_BLOCK_NAME] != current_block_name]
-    
-    # Dữ liệu từ UI (RAM)
     df_save = df_current_ui.copy()
     for c in ['STT', COL_COPY_FLAG]: 
         if c in df_save.columns: df_save = df_save.drop(columns=[c])
     df_save[COL_BLOCK_NAME] = current_block_name
     
-    # Gộp
     df_final = pd.concat([df_other, df_save], ignore_index=True).astype(str).replace(['nan', 'None'], '')
-    
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_final.columns: df_final[c] = ""
-    
-    wks.clear()
-    wks.update([cols] + df_final[cols].values.tolist())
-    st.toast(f"✅ Đã lưu cấu hình: {current_block_name} xuống Google Sheet!", icon="💾")
+    wks.clear(); wks.update([cols] + df_final[cols].values.tolist())
+    st.toast(f"✅ Đã lưu cấu hình: {current_block_name}!", icon="💾")
 
 def rename_block_action(old_name, new_name, creds):
     if not new_name or new_name == old_name: return False
@@ -444,18 +432,17 @@ def save_full_direct(df_full, creds):
     df_full = df_full.astype(str).replace(['nan', 'None'], '')
     for c in cols:
          if c not in df_full.columns: df_full[c] = ""
-    wks.clear()
-    wks.update([cols] + df_full[cols].values.tolist())
+    wks.clear(); wks.update([cols] + df_full[cols].values.tolist())
 
 # --- 7. UI CHÍNH ---
 @st.dialog("📘 TÀI LIỆU", width="large")
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    ### Nguyên lý hoạt động (V9 - Chế độ Edit ổn định):
-    1. **Mọi thao tác sửa/copy** được lưu tạm vào bộ nhớ ngay lập tức.
-    2. Dữ liệu sẽ không bị "nhảy" về giá trị cũ khi bạn chọn dropdown.
-    3. **Lưu ý:** Vẫn phải ấn nút **💾 Lưu Cấu Hình** để ghi xuống Sheet.
+    ### Nguyên lý mới (V11):
+    1. **Sao chép Khối:** Chỉ copy tên và nội dung cấu hình sang khối mới. 
+    2. **Tự động chuyển:** Sau khi copy, màn hình sẽ tự nhảy sang khối vừa tạo.
+    3. **Giữ vị trí:** Khi sửa ở khối nào, màn hình sẽ giữ nguyên ở khối đó, không bị nhảy về đầu.
     """)
 
 def main_ui():
@@ -464,7 +451,7 @@ def main_ui():
     creds = get_creds()
     
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("⚡ Kinkin Manager (V10)"); st.caption(f"User: {user_id}")
+    with c1: st.title("🎯 Kinkin Manager (V11 - Focus)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
@@ -472,11 +459,10 @@ def main_ui():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        # Load Config (Cache)
+        # Load Config
         if 'df_full_config' not in st.session_state:
              st.session_state['df_full_config'] = load_full_config(creds)
         
-        # Nút Refresh thủ công
         if st.button("🔄 Tải lại dữ liệu (Refresh)"):
             st.cache_data.clear()
             st.session_state['df_full_config'] = load_full_config(creds)
@@ -484,10 +470,31 @@ def main_ui():
             time.sleep(0.5)
             st.rerun()
 
-        # List Blocks
+        # Logic Selectbox thông minh (Nhớ trạng thái)
         df_config = st.session_state['df_full_config']
         blocks = df_config[COL_BLOCK_NAME].unique().tolist() if not df_config.empty else [DEFAULT_BLOCK_NAME]
-        sel_block = st.selectbox("Chọn Khối:", blocks)
+        
+        # Kiểm tra session target_block để set index
+        if 'target_block_display' not in st.session_state:
+            st.session_state['target_block_display'] = blocks[0]
+        
+        # Đảm bảo target nằm trong list (phòng trường hợp xoá)
+        if st.session_state['target_block_display'] not in blocks:
+            st.session_state['target_block_display'] = blocks[0]
+            
+        current_index = blocks.index(st.session_state['target_block_display'])
+
+        # Callback khi user chọn thủ công
+        def on_block_change():
+            st.session_state['target_block_display'] = st.session_state.sb_selected_block
+
+        sel_block = st.selectbox(
+            "Chọn Khối:", 
+            blocks, 
+            index=current_index, 
+            key="sb_selected_block",
+            on_change=on_block_change
+        )
         
         # COPY BLOCK
         c_copy_blk, c_blank = st.columns([2, 1])
@@ -496,11 +503,20 @@ def main_ui():
              if new_block_name in blocks:
                  st.toast(f"Tên {new_block_name} đã tồn tại!", icon="⚠️")
              else:
+                 # Copy Data Logic
                  block_data = df_config[df_config[COL_BLOCK_NAME] == sel_block].copy()
                  block_data[COL_BLOCK_NAME] = new_block_name
+                 
+                 # Cập nhật RAM
                  st.session_state['df_full_config'] = pd.concat([df_config, block_data], ignore_index=True)
+                 
+                 # Lưu Sheet
                  save_block_config_to_sheet(block_data, new_block_name, creds)
-                 st.toast(f"Đã tạo: {new_block_name}", icon="✅")
+                 
+                 # [FIX] Đặt target hiển thị là khối mới
+                 st.session_state['target_block_display'] = new_block_name
+                 
+                 st.toast(f"Đã tạo & Chuyển tới: {new_block_name}", icon="✅")
                  time.sleep(0.5); st.rerun()
 
         with st.expander("⚙️ Quản lý Khối"):
@@ -509,12 +525,15 @@ def main_ui():
                 row = {c: "" for c in df_config.columns}
                 row[COL_BLOCK_NAME] = new_b; row[COL_STATUS] = "Chưa chốt & đang cập nhật"
                 st.session_state['df_full_config'] = pd.concat([df_config, pd.DataFrame([row])], ignore_index=True)
+                st.session_state['target_block_display'] = new_b # Focus mới
                 st.rerun()
             
             rename_val = st.text_input("Đổi tên khối thành:", value=sel_block)
             if st.button("✏️ Đổi Tên") and rename_val != sel_block:
                 if rename_block_action(sel_block, rename_val, creds):
-                    st.cache_data.clear(); del st.session_state['df_full_config']; st.rerun()
+                    st.cache_data.clear(); del st.session_state['df_full_config']
+                    st.session_state['target_block_display'] = rename_val # Focus tên mới
+                    st.rerun()
             
             if st.button("🗑️ Xóa Khối Này", type="primary"):
                 if len(blocks) <= 1 and blocks[0] == DEFAULT_BLOCK_NAME:
@@ -522,30 +541,27 @@ def main_ui():
                 else:
                     delete_block_direct(sel_block, creds)
                     st.success(f"Đã xóa: {sel_block}")
-                    st.cache_data.clear(); del st.session_state['df_full_config']; time.sleep(1); st.rerun()
+                    st.cache_data.clear(); del st.session_state['df_full_config']
+                    # Reset về khối đầu tiên sau khi xoá
+                    if 'target_block_display' in st.session_state: del st.session_state['target_block_display']
+                    time.sleep(1); st.rerun()
         
         st.divider()
         if st.button("📘 Hướng Dẫn"): show_guide()
 
-    # --- EDITOR (ỔN ĐỊNH CAO) ---
+    # --- EDITOR ---
     st.subheader(f"Cấu hình: {sel_block}")
     
-    # 1. Lọc data cho block hiện tại từ session state tổng
-    # Dùng .copy() để đảm bảo ta đang thao tác trên bản sao, không ảnh hưởng trực tiếp khi chưa lưu
     current_block_df = st.session_state['df_full_config'][
         st.session_state['df_full_config'][COL_BLOCK_NAME] == sel_block
     ].copy().reset_index(drop=True)
     
-    # 2. Chuẩn bị các cột hiển thị
     if COL_COPY_FLAG not in current_block_df.columns: current_block_df.insert(0, COL_COPY_FLAG, False)
-    else: current_block_df[COL_COPY_FLAG] = False # Luôn reset cột copy về False khi load lại
+    else: current_block_df[COL_COPY_FLAG] = False
     
     if 'STT' not in current_block_df.columns: current_block_df.insert(1, 'STT', range(1, len(current_block_df)+1))
     else: current_block_df['STT'] = range(1, len(current_block_df)+1)
     
-    # 3. Hiển thị Data Editor
-    # Quan trọng: Key bây giờ là tĩnh "main_editor" để tránh reset component, 
-    # nhưng ta sẽ quản lý data input/output thủ công.
     edited_df = st.data_editor(
         current_block_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_MODE, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW, COL_NOTE],
@@ -564,14 +580,13 @@ def main_ui():
         },
         use_container_width=True, 
         num_rows="dynamic",
-        key=f"editor_{sel_block}_v9" # Key buộc phải đổi khi đổi block, nhưng giữ nguyên khi edit trong block
+        key=f"editor_v11" # Key tĩnh để ổn định
     )
 
-    # --- XỬ LÝ SỰ KIỆN SAU KHI EDIT ---
-    # Logic: Mỗi khi edited_df thay đổi (do user nhập liệu), ta cập nhật ngay vào session_state tổng
-    # Để lần rerun tiếp theo (do checkbox hay do chọn dropdown), dữ liệu không bị mất.
-
-    # 1. Kiểm tra sự kiện Copy
+    # --- LOGIC XỬ LÝ DỮ LIỆU ---
+    has_changes = False
+    
+    # 1. Logic Copy Dòng (Nếu có tích)
     if edited_df[COL_COPY_FLAG].any():
         new_rows = []
         for index, row in edited_df.iterrows():
@@ -581,36 +596,22 @@ def main_ui():
                 row_copy = row.copy(); row_copy[COL_COPY_FLAG] = False
                 new_rows.append(row_copy)
         
-        # Cập nhật RAM ngay lập tức
-        new_blk_df = pd.DataFrame(new_rows)
-        # Bỏ cột ảo
-        if 'STT' in new_blk_df.columns: new_blk_df = new_blk_df.drop(columns=['STT'])
-        if COL_COPY_FLAG in new_blk_df.columns: new_blk_df = new_blk_df.drop(columns=[COL_COPY_FLAG])
-        
-        df_full = st.session_state['df_full_config']
-        df_other = df_full[df_full[COL_BLOCK_NAME] != sel_block]
-        st.session_state['df_full_config'] = pd.concat([df_other, new_blk_df], ignore_index=True)
-        st.rerun() # Reload để hiện dòng mới
+        edited_df = pd.DataFrame(new_rows) # Cập nhật lại edited_df sau copy
+        has_changes = True
 
-    # 2. Nếu chỉ là sửa dữ liệu bình thường (bao gồm chọn Dropdown)
-    else:
-        # Chúng ta so sánh edited_df với current_block_df xem có khác nhau không
-        # Tuy nhiên, để tối ưu, ta cứ cập nhật luôn vào RAM.
-        
-        df_to_merge = edited_df.copy()
-        if 'STT' in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=['STT'])
-        if COL_COPY_FLAG in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=[COL_COPY_FLAG])
-        
-        # Cập nhật RAM
-        df_full = st.session_state['df_full_config']
-        df_other = df_full[df_full[COL_BLOCK_NAME] != sel_block]
-        
-        # Merge lại
-        new_full_config = pd.concat([df_other, df_to_merge], ignore_index=True)
-        
-        # Quan trọng: Chỉ cập nhật nếu thực sự có thay đổi để tránh vòng lặp vô tận (nếu cần thiết)
-        # Nhưng với st.data_editor cơ chế mới, việc gán lại session_state này an toàn.
-        st.session_state['df_full_config'] = new_full_config
+    # 2. Cập nhật vào RAM (Luôn chạy để sync data mới nhất)
+    # Bỏ cột ảo
+    df_to_merge = edited_df.copy()
+    if 'STT' in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=['STT'])
+    if COL_COPY_FLAG in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=[COL_COPY_FLAG])
+    
+    # Merge
+    df_full = st.session_state['df_full_config']
+    df_other = df_full[df_full[COL_BLOCK_NAME] != sel_block]
+    st.session_state['df_full_config'] = pd.concat([df_other, df_to_merge], ignore_index=True)
+    
+    # Nếu có copy dòng thì rerun để refresh UI
+    if has_changes: st.rerun()
 
     # --- BUTTONS ---
     st.divider()
@@ -623,7 +624,6 @@ def main_ui():
             if not rows: st.warning("Không có việc cần chạy."); st.stop()
             with st.status("Đang chạy...", expanded=True) as status:
                 ok, res_map, total = process_pipeline_mixed(rows, user_id, sel_block, status)
-                # Update UI
                 for i, r in edited_df.iterrows():
                     lnk = str(r.get(COL_SRC_LINK, '')).strip()
                     if lnk in res_map:
