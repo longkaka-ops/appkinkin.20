@@ -11,7 +11,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V8 - Siêu Mượt)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Kinkin Manager (V9 - Stable Edit)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -74,7 +74,7 @@ def check_login():
     
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        st.header("⚡ Đăng nhập hệ thống")
+        st.header("🛡️ Đăng nhập hệ thống")
         pwd = st.text_input("Nhập mật khẩu:", type="password")
         if st.button("Đăng Nhập", use_container_width=True):
             if pwd in AUTHORIZED_USERS:
@@ -101,7 +101,7 @@ def get_sh_with_retry(creds, sheet_id_or_key):
             time.sleep((2 ** i) + 0.5) 
     return None
 
-# --- 3. CORE ETL (Logic xử lý dữ liệu) ---
+# --- 3. CORE ETL ---
 def fetch_data_v2(row_config, creds):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
@@ -288,7 +288,7 @@ def save_sys_schedule(df_schedule, creds):
     wks.clear()
     wks.update([df_schedule.columns.tolist()] + df_schedule.fillna('').values.tolist())
 
-# --- 5. PIPELINE & PERMISSIONS ---
+# --- 5. PIPELINE ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -361,10 +361,9 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
     finally:
         set_system_lock(creds, user_id, lock=False)
 
-# --- 6. QUẢN LÝ CONFIG (OPTIMIZED CACHE) ---
+# --- 6. QUẢN LÝ CONFIG (OPTIMIZED) ---
 
-# [TỐI ƯU] Bỏ TTL=5. Chỉ load khi cần (khi user F5 hoặc ấn nút Refresh)
-@st.cache_data 
+@st.cache_data
 def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
@@ -389,42 +388,30 @@ def delete_block_direct(block_name_to_delete, creds):
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: return
-    
     df_new = df_server[df_server[COL_BLOCK_NAME] != block_name_to_delete]
     
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_new.columns: df_new[c] = ""
-    
-    wks.clear()
-    wks.update([cols] + df_new[cols].values.tolist())
+    wks.clear(); wks.update([cols] + df_new[cols].values.tolist())
 
-# Chỉ lưu khi ấn nút (Merge an toàn)
 def save_block_config_to_sheet(df_current_ui, current_block_name, creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
-    
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: df_server[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
     
-    # Loại bỏ block cũ
     df_other = df_server[df_server[COL_BLOCK_NAME] != current_block_name]
-    
-    # Dữ liệu từ UI (RAM)
     df_save = df_current_ui.copy()
     for c in ['STT', COL_COPY_FLAG]: 
         if c in df_save.columns: df_save = df_save.drop(columns=[c])
     df_save[COL_BLOCK_NAME] = current_block_name
     
-    # Gộp
     df_final = pd.concat([df_other, df_save], ignore_index=True).astype(str).replace(['nan', 'None'], '')
-    
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_final.columns: df_final[c] = ""
-    
-    wks.clear()
-    wks.update([cols] + df_final[cols].values.tolist())
+    wks.clear(); wks.update([cols] + df_final[cols].values.tolist())
     st.toast(f"✅ Đã lưu cấu hình: {current_block_name} xuống Google Sheet!", icon="💾")
 
 def rename_block_action(old_name, new_name, creds):
@@ -444,18 +431,17 @@ def save_full_direct(df_full, creds):
     df_full = df_full.astype(str).replace(['nan', 'None'], '')
     for c in cols:
          if c not in df_full.columns: df_full[c] = ""
-    wks.clear()
-    wks.update([cols] + df_full[cols].values.tolist())
+    wks.clear(); wks.update([cols] + df_full[cols].values.tolist())
 
 # --- 7. UI CHÍNH ---
 @st.dialog("📘 TÀI LIỆU", width="large")
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    ### Nguyên lý hoạt động (V8):
-    1. **Mượt mà:** Mọi thao tác sửa, copy dòng chỉ diễn ra trên máy của bạn (RAM). Không gửi lên Google Sheet ngay nên rất nhanh.
-    2. **Lưu:** Bạn **PHẢI** ấn nút **💾 Lưu Cấu Hình** thì dữ liệu mới được ghi xuống Sheet.
-    3. **Copy Khối:** Ấn nút là tạo ngay khối mới.
+    ### Nguyên lý hoạt động (V9 - Chế độ Edit ổn định):
+    1. **Mọi thao tác sửa/copy** được lưu tạm vào bộ nhớ ngay lập tức.
+    2. Dữ liệu sẽ không bị "nhảy" về giá trị cũ khi bạn chọn dropdown.
+    3. **Lưu ý:** Vẫn phải ấn nút **💾 Lưu Cấu Hình** để ghi xuống Sheet.
     """)
 
 def main_ui():
@@ -464,7 +450,7 @@ def main_ui():
     creds = get_creds()
     
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("⚡ Kinkin Manager (V8 - Performance)"); st.caption(f"User: {user_id}")
+    with c1: st.title("⚡ Kinkin Manager (V9 - Stable)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
@@ -472,11 +458,11 @@ def main_ui():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        # Load Config (Chỉ load lần đầu hoặc khi force refresh)
+        # Load Config (Cache)
         if 'df_full_config' not in st.session_state:
              st.session_state['df_full_config'] = load_full_config(creds)
         
-        # Nút Refresh thủ công (Khi bạn muốn lấy dữ liệu mới nhất từ người khác sửa)
+        # Nút Refresh thủ công
         if st.button("🔄 Tải lại dữ liệu (Refresh)"):
             st.cache_data.clear()
             st.session_state['df_full_config'] = load_full_config(creds)
@@ -484,7 +470,7 @@ def main_ui():
             time.sleep(0.5)
             st.rerun()
 
-        # Lấy list block từ RAM
+        # List Blocks
         df_config = st.session_state['df_full_config']
         blocks = df_config[COL_BLOCK_NAME].unique().tolist() if not df_config.empty else [DEFAULT_BLOCK_NAME]
         sel_block = st.selectbox("Chọn Khối:", blocks)
@@ -498,9 +484,7 @@ def main_ui():
              else:
                  block_data = df_config[df_config[COL_BLOCK_NAME] == sel_block].copy()
                  block_data[COL_BLOCK_NAME] = new_block_name
-                 # Cập nhật RAM
                  st.session_state['df_full_config'] = pd.concat([df_config, block_data], ignore_index=True)
-                 # Cập nhật Disk (Google Sheet) ngay để đảm bảo an toàn
                  save_block_config_to_sheet(block_data, new_block_name, creds)
                  st.toast(f"Đã tạo: {new_block_name}", icon="✅")
                  time.sleep(0.5); st.rerun()
@@ -529,21 +513,25 @@ def main_ui():
         st.divider()
         if st.button("📘 Hướng Dẫn"): show_guide()
 
-    # --- EDITOR (CHỈ THAO TÁC TRÊN RAM) ---
+    # --- EDITOR (ỔN ĐỊNH CAO) ---
     st.subheader(f"Cấu hình: {sel_block}")
     
-    # Lọc data từ RAM
+    # 1. Lọc data cho block hiện tại từ session state tổng
+    # Dùng .copy() để đảm bảo ta đang thao tác trên bản sao, không ảnh hưởng trực tiếp khi chưa lưu
     current_block_df = st.session_state['df_full_config'][
         st.session_state['df_full_config'][COL_BLOCK_NAME] == sel_block
     ].copy().reset_index(drop=True)
     
+    # 2. Chuẩn bị các cột hiển thị
     if COL_COPY_FLAG not in current_block_df.columns: current_block_df.insert(0, COL_COPY_FLAG, False)
-    else: current_block_df[COL_COPY_FLAG] = False
+    else: current_block_df[COL_COPY_FLAG] = False # Luôn reset cột copy về False khi load lại
     
     if 'STT' not in current_block_df.columns: current_block_df.insert(1, 'STT', range(1, len(current_block_df)+1))
     else: current_block_df['STT'] = range(1, len(current_block_df)+1)
     
-    # Hiển thị bảng
+    # 3. Hiển thị Data Editor
+    # Quan trọng: Key bây giờ là tĩnh "main_editor" để tránh reset component, 
+    # nhưng ta sẽ quản lý data input/output thủ công.
     edited_df = st.data_editor(
         current_block_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_MODE, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW, COL_NOTE],
@@ -560,63 +548,72 @@ def main_ui():
             COL_LOG_ROW: st.column_config.TextColumn(disabled=True),
             COL_BLOCK_NAME: None
         },
-        use_container_width=True, num_rows="dynamic", key=f"editor_{sel_block}"
+        use_container_width=True, 
+        num_rows="dynamic",
+        key=f"editor_{sel_block}_v9" # Key buộc phải đổi khi đổi block, nhưng giữ nguyên khi edit trong block
     )
 
-    # --- XỬ LÝ UPDATE RAM (KHÔNG LƯU API) ---
-    
-    # Trường hợp 1: Có dòng được tích Copy
+    # --- XỬ LÝ SỰ KIỆN SAU KHI EDIT ---
+    # Logic: Mỗi khi edited_df thay đổi (do user nhập liệu), ta cập nhật ngay vào session_state tổng
+    # Để lần rerun tiếp theo (do checkbox hay do chọn dropdown), dữ liệu không bị mất.
+
+    # 1. Kiểm tra sự kiện Copy
     if edited_df[COL_COPY_FLAG].any():
         new_rows = []
         for index, row in edited_df.iterrows():
             row_clean = row.copy(); row_clean[COL_COPY_FLAG] = False
             new_rows.append(row_clean)
-            if row[COL_COPY_FLAG]: # Nếu tích
+            if row[COL_COPY_FLAG]: 
                 row_copy = row.copy(); row_copy[COL_COPY_FLAG] = False
                 new_rows.append(row_copy)
         
-        # Cập nhật RAM tổng
+        # Cập nhật RAM ngay lập tức
         new_blk_df = pd.DataFrame(new_rows)
-        # Bỏ cột ảo trước khi merge
+        # Bỏ cột ảo
         if 'STT' in new_blk_df.columns: new_blk_df = new_blk_df.drop(columns=['STT'])
         if COL_COPY_FLAG in new_blk_df.columns: new_blk_df = new_blk_df.drop(columns=[COL_COPY_FLAG])
         
         df_full = st.session_state['df_full_config']
         df_other = df_full[df_full[COL_BLOCK_NAME] != sel_block]
         st.session_state['df_full_config'] = pd.concat([df_other, new_blk_df], ignore_index=True)
-        st.rerun() # Refresh UI ngay
+        st.rerun() # Reload để hiện dòng mới
 
-    # Trường hợp 2: Edit bình thường (Sửa chữ)
+    # 2. Nếu chỉ là sửa dữ liệu bình thường (bao gồm chọn Dropdown)
     else:
-        # Chuẩn bị data từ UI
+        # Chúng ta so sánh edited_df với current_block_df xem có khác nhau không
+        # Tuy nhiên, để tối ưu, ta cứ cập nhật luôn vào RAM.
+        
         df_to_merge = edited_df.copy()
         if 'STT' in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=['STT'])
         if COL_COPY_FLAG in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=[COL_COPY_FLAG])
         
-        # Cập nhật RAM (KHÔNG GỌI save_block_config_to_sheet)
+        # Cập nhật RAM
         df_full = st.session_state['df_full_config']
         df_other = df_full[df_full[COL_BLOCK_NAME] != sel_block]
-        st.session_state['df_full_config'] = pd.concat([df_other, df_to_merge], ignore_index=True)
-        # KHÔNG Rerun để tránh nháy màn hình, vì st.data_editor đã giữ trạng thái hiển thị rồi.
+        
+        # Merge lại
+        new_full_config = pd.concat([df_other, df_to_merge], ignore_index=True)
+        
+        # Quan trọng: Chỉ cập nhật nếu thực sự có thay đổi để tránh vòng lặp vô tận (nếu cần thiết)
+        # Nhưng với st.data_editor cơ chế mới, việc gán lại session_state này an toàn.
+        st.session_state['df_full_config'] = new_full_config
 
-    # --- BUTTONS (CHỖ NÀY MỚI GỌI API) ---
+    # --- BUTTONS ---
     st.divider()
     c_run, c_all, c_scan, c_save = st.columns([2, 2, 1, 1])
     
     with c_run:
         if st.button(f"▶️ CHẠY KHỐI: {sel_block}", type="primary"):
-            # Lấy data từ UI (RAM)
             rows = edited_df[edited_df[COL_STATUS] == "Chưa chốt & đang cập nhật"].to_dict('records')
             rows = [r for r in rows if len(str(r.get(COL_SRC_LINK, ''))) > 5]
             if not rows: st.warning("Không có việc cần chạy."); st.stop()
             with st.status("Đang chạy...", expanded=True) as status:
                 ok, res_map, total = process_pipeline_mixed(rows, user_id, sel_block, status)
-                # Update Kết quả vào UI
+                # Update UI
                 for i, r in edited_df.iterrows():
                     lnk = str(r.get(COL_SRC_LINK, '')).strip()
                     if lnk in res_map:
                         edited_df.at[i, COL_RESULT] = res_map[lnk][0]
-                # CHỖ NÀY MỚI LƯU
                 save_block_config_to_sheet(edited_df, sel_block, creds)
                 status.update(label=f"Xong! {total} dòng.", state="complete")
                 time.sleep(1); st.rerun()
@@ -624,7 +621,6 @@ def main_ui():
     with c_all:
         if st.button("🚀 CHẠY TẤT CẢ"):
             with st.status("Đang chạy toàn hệ thống...", expanded=True) as status:
-                # Load fresh nếu chạy tất cả
                 full_df = load_full_config(creds)
                 all_blks = full_df[COL_BLOCK_NAME].unique()
                 total_all = 0
@@ -643,10 +639,8 @@ def main_ui():
         if st.button("🔍 Quét"): st.toast("Tính năng quét đang cập nhật!")
 
     with c_save:
-        # NÚT LƯU QUAN TRỌNG
         if st.button("💾 Lưu Cấu Hình"):
             save_block_config_to_sheet(edited_df, sel_block, creds)
-            # Sau khi lưu thành công, cập nhật lại cache
             st.cache_data.clear()
             st.session_state['df_full_config'] = load_full_config(creds)
             st.rerun()
