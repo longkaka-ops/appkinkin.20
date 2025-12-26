@@ -14,7 +14,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V18 - Full Trace)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V19 - Full Log)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -114,74 +114,80 @@ def fetch_activity_logs(creds, limit=50):
         return df.tail(limit).iloc[::-1]
     except: return pd.DataFrame()
 
-# --- [V18 - HÀM SOI CHI TIẾT THAY ĐỔI] ---
+# --- [V19 - THUẬT TOÁN SOI CHI TIẾT] ---
 def row_to_string(row):
-    """Chuyển đổi 1 dòng thành chuỗi định danh để so sánh"""
-    # Lấy các cột quan trọng để tạo chữ ký
-    cols = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER]
+    """Tạo chữ ký dòng để so sánh"""
+    cols = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER, COL_MODE]
     vals = [str(row.get(c, '')).strip().replace('nan', '') for c in cols]
     return "|".join(vals)
 
-def format_row_detail(row):
-    """Format thông tin dòng để ghi log đẹp hơn"""
-    src = str(row.get(COL_SRC_LINK, ''))
-    tgt = str(row.get(COL_TGT_LINK, ''))
-    # Cắt ngắn link nếu quá dài
-    if len(src) > 30: src = "..." + src[-25:]
-    if len(tgt) > 30: tgt = "..." + tgt[-25:]
-    return f"[Nguồn: {src} | Đích: {tgt} | Sheet: {row.get(COL_SRC_SHEET, '')}]"
+def format_full_row_info(row):
+    """Format TOÀN BỘ thông tin dòng để lưu lại khi xóa"""
+    info = []
+    # Các cột quan trọng cần lưu lại khi xóa để có thể khôi phục
+    key_cols = [
+        (COL_SRC_LINK, "Link Nguồn"),
+        (COL_TGT_LINK, "Link Đích"),
+        (COL_SRC_SHEET, "Sheet Nguồn"),
+        (COL_TGT_SHEET, "Sheet Đích"),
+        (COL_DATA_RANGE, "Range"),
+        (COL_FILTER, "Filter"),
+        (COL_MODE, "Mode")
+    ]
+    for col, label in key_cols:
+        val = str(row.get(col, '')).strip().replace('nan', '')
+        if val: info.append(f"{label}='{val}'")
+    
+    return ", ".join(info)
 
 def detect_changes_detailed(df_old, df_new):
-    """So sánh thông minh để phát hiện Xóa/Thêm/Sửa"""
+    """So sánh 2 dataframe để tìm ra thay đổi cụ thể"""
     changes = []
     
-    # 1. Chuyển đổi DataFrame thành list các dict để dễ so sánh
     old_records = df_old.to_dict('records')
     new_records = df_new.to_dict('records')
     
-    # Tạo danh sách chữ ký
-    old_sigs = [row_to_string(r) for r in old_records]
-    new_sigs = [row_to_string(r) for r in new_records]
-    
-    # 2. Tìm các dòng bị XÓA (Có trong Old nhưng không có trong New)
-    # Lưu ý: Logic này giả định nội dung dòng là unique. Nếu sửa dòng -> coi như Xóa dòng cũ + Thêm dòng mới.
-    
-    # Tuy nhiên, để phát hiện "Sửa" chính xác hơn, ta so sánh theo index nếu số lượng dòng bằng nhau.
+    # 1. Trường hợp số dòng KHÔNG ĐỔI -> Có thể là SỬA
     if len(old_records) == len(new_records):
-        # Trường hợp SỬA tại chỗ
         for i in range(len(old_records)):
-            if old_sigs[i] != new_sigs[i]:
-                # Tìm ra cột nào khác
-                diff_cols = []
-                r_old = old_records[i]
-                r_new = new_records[i]
-                cols_check = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER, COL_MODE]
-                
-                for col in cols_check:
-                    v_old = str(r_old.get(col, '')).strip().replace('nan', '')
-                    v_new = str(r_new.get(col, '')).strip().replace('nan', '')
-                    if v_old != v_new:
-                        if len(v_old) > 20: v_old = "..." + v_old[-10:]
-                        if len(v_new) > 20: v_new = "..." + v_new[-10:]
-                        diff_cols.append(f"{col}: {v_old}->{v_new}")
-                
-                if diff_cols:
-                    changes.append(f"✏️ Sửa dòng {i+1}: {', '.join(diff_cols)}")
-    else:
-        # Trường hợp số dòng lệch nhau -> Ưu tiên bắt sự kiện XÓA
-        # Tìm những dòng cũ không còn tồn tại trong danh sách mới
-        for r_old in old_records:
-            sig = row_to_string(r_old)
-            if sig not in new_sigs:
-                changes.append(f"❌ Đã xóa dòng: {format_row_detail(r_old)}")
-        
-        # Tìm những dòng mới
-        for r_new in new_records:
-            sig = row_to_string(r_new)
-            if sig not in old_sigs:
-                changes.append(f"➕ Đã thêm dòng: {format_row_detail(r_new)}")
+            r_old = old_records[i]
+            r_new = new_records[i]
+            
+            diffs = []
+            cols_check = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER, COL_MODE, COL_DATA_RANGE, COL_STATUS]
+            
+            for col in cols_check:
+                v_old = str(r_old.get(col, '')).strip().replace('nan', '')
+                v_new = str(r_new.get(col, '')).strip().replace('nan', '')
+                if v_old != v_new:
+                    # Cắt ngắn nếu quá dài để log gọn
+                    if len(v_old) > 20: v_old = "..." + v_old[-10:]
+                    if len(v_new) > 20: v_new = "..." + v_new[-10:]
+                    diffs.append(f"{col}: {v_old} -> {v_new}")
+            
+            if diffs:
+                changes.append(f"✏️ Sửa dòng {i+1}: {'; '.join(diffs)}")
 
-    if not changes: return "Lưu (Không thay đổi nội dung)"
+    # 2. Trường hợp LỆCH DÒNG (Thêm hoặc Xóa)
+    else:
+        # Tìm dòng bị XÓA: Có trong Old mà ko có trong New
+        new_sigs = [row_to_string(r) for r in new_records]
+        
+        for i, r_old in enumerate(old_records):
+            sig_old = row_to_string(r_old)
+            if sig_old not in new_sigs:
+                # [QUAN TRỌNG] Ghi lại toàn bộ thông tin dòng bị xóa
+                full_info = format_full_row_info(r_old)
+                changes.append(f"❌ Đã xóa dòng (STT {i+1} cũ): [{full_info}]")
+
+        # Tìm dòng MỚI THÊM
+        old_sigs = [row_to_string(r) for r in old_records]
+        for i, r_new in enumerate(new_records):
+            sig_new = row_to_string(r_new)
+            if sig_new not in old_sigs:
+                changes.append(f"➕ Thêm dòng mới tại vị trí {i+1}")
+
+    if not changes: return "Lưu cấu hình (Không có thay đổi nội dung)"
     return "\n".join(changes)
 
 # --- LOGIN ---
