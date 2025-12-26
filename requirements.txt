@@ -1,0 +1,13 @@
+streamlit
+pandas
+polars
+requests
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+xlsxwriter
+gspread
+gspread-dataframe
+pytz
+oauth2client
+openpyxl
