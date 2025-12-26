@@ -14,7 +14,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V17 - Deep Log)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V18 - Full Trace)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -98,7 +98,7 @@ def log_user_action(creds, user_id, action, status=""):
         try: wks = sh.worksheet(SHEET_ACTIVITY_NAME)
         except: 
             wks = sh.add_worksheet(SHEET_ACTIVITY_NAME, rows=1000, cols=4)
-            wks.append_row(["Thời gian", "Người dùng", "Hành vi", "Trạng thái"])
+            wks.append_row(["Thời gian", "Người dùng", "Hành vi", "Trạng thái (Chi tiết)"])
         
         tz_vn = pytz.timezone('Asia/Ho_Chi_Minh')
         time_now = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
@@ -114,57 +114,75 @@ def fetch_activity_logs(creds, limit=50):
         return df.tail(limit).iloc[::-1]
     except: return pd.DataFrame()
 
-# --- [V17 - HÀM SOI CHI TIẾT THAY ĐỔI] ---
+# --- [V18 - HÀM SOI CHI TIẾT THAY ĐỔI] ---
+def row_to_string(row):
+    """Chuyển đổi 1 dòng thành chuỗi định danh để so sánh"""
+    # Lấy các cột quan trọng để tạo chữ ký
+    cols = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER]
+    vals = [str(row.get(c, '')).strip().replace('nan', '') for c in cols]
+    return "|".join(vals)
+
+def format_row_detail(row):
+    """Format thông tin dòng để ghi log đẹp hơn"""
+    src = str(row.get(COL_SRC_LINK, ''))
+    tgt = str(row.get(COL_TGT_LINK, ''))
+    # Cắt ngắn link nếu quá dài
+    if len(src) > 30: src = "..." + src[-25:]
+    if len(tgt) > 30: tgt = "..." + tgt[-25:]
+    return f"[Nguồn: {src} | Đích: {tgt} | Sheet: {row.get(COL_SRC_SHEET, '')}]"
+
 def detect_changes_detailed(df_old, df_new):
-    """So sánh từng ô dữ liệu để báo cáo chi tiết"""
+    """So sánh thông minh để phát hiện Xóa/Thêm/Sửa"""
     changes = []
     
-    # 1. So sánh số lượng dòng
-    len_old = len(df_old)
-    len_new = len(df_new)
+    # 1. Chuyển đổi DataFrame thành list các dict để dễ so sánh
+    old_records = df_old.to_dict('records')
+    new_records = df_new.to_dict('records')
     
-    # Các cột cần theo dõi kỹ
-    monitor_cols = {
-        COL_SRC_LINK: "LinkNguon",
-        COL_TGT_LINK: "LinkDich",
-        COL_SRC_SHEET: "SheetNguon",
-        COL_TGT_SHEET: "SheetDich",
-        COL_DATA_RANGE: "VungLay",
-        COL_FILTER: "BoLoc",
-        COL_MODE: "CheDo",
-        COL_STATUS: "TrangThai"
-    }
+    # Tạo danh sách chữ ký
+    old_sigs = [row_to_string(r) for r in old_records]
+    new_sigs = [row_to_string(r) for r in new_records]
     
-    # 2. Quét các dòng tồn tại song song (theo thứ tự từ trên xuống)
-    min_len = min(len_old, len_new)
-    for i in range(min_len):
-        row_old = df_old.iloc[i]
-        row_new = df_new.iloc[i]
+    # 2. Tìm các dòng bị XÓA (Có trong Old nhưng không có trong New)
+    # Lưu ý: Logic này giả định nội dung dòng là unique. Nếu sửa dòng -> coi như Xóa dòng cũ + Thêm dòng mới.
+    
+    # Tuy nhiên, để phát hiện "Sửa" chính xác hơn, ta so sánh theo index nếu số lượng dòng bằng nhau.
+    if len(old_records) == len(new_records):
+        # Trường hợp SỬA tại chỗ
+        for i in range(len(old_records)):
+            if old_sigs[i] != new_sigs[i]:
+                # Tìm ra cột nào khác
+                diff_cols = []
+                r_old = old_records[i]
+                r_new = new_records[i]
+                cols_check = [COL_SRC_LINK, COL_TGT_LINK, COL_SRC_SHEET, COL_TGT_SHEET, COL_FILTER, COL_MODE]
+                
+                for col in cols_check:
+                    v_old = str(r_old.get(col, '')).strip().replace('nan', '')
+                    v_new = str(r_new.get(col, '')).strip().replace('nan', '')
+                    if v_old != v_new:
+                        if len(v_old) > 20: v_old = "..." + v_old[-10:]
+                        if len(v_new) > 20: v_new = "..." + v_new[-10:]
+                        diff_cols.append(f"{col}: {v_old}->{v_new}")
+                
+                if diff_cols:
+                    changes.append(f"✏️ Sửa dòng {i+1}: {', '.join(diff_cols)}")
+    else:
+        # Trường hợp số dòng lệch nhau -> Ưu tiên bắt sự kiện XÓA
+        # Tìm những dòng cũ không còn tồn tại trong danh sách mới
+        for r_old in old_records:
+            sig = row_to_string(r_old)
+            if sig not in new_sigs:
+                changes.append(f"❌ Đã xóa dòng: {format_row_detail(r_old)}")
         
-        diffs = []
-        for col, col_short in monitor_cols.items():
-            val_old = str(row_old.get(col, '')).strip().replace('nan', '')
-            val_new = str(row_new.get(col, '')).strip().replace('nan', '')
-            
-            if val_old != val_new:
-                # Nếu chuỗi quá dài (link), cắt bớt để log gọn
-                if len(val_old) > 20: val_old = val_old[:10] + "..."
-                if len(val_new) > 20: val_new = val_new[:10] + "..."
-                diffs.append(f"{col_short}: '{val_old}' -> '{val_new}'")
-        
-        if diffs:
-            changes.append(f"Dòng {i+1} sửa: [{', '.join(diffs)}]")
+        # Tìm những dòng mới
+        for r_new in new_records:
+            sig = row_to_string(r_new)
+            if sig not in old_sigs:
+                changes.append(f"➕ Đã thêm dòng: {format_row_detail(r_new)}")
 
-    # 3. Báo cáo thêm/xóa dòng
-    if len_new > len_old:
-        added_count = len_new - len_old
-        changes.append(f"Thêm {added_count} dòng mới ở cuối")
-    elif len_new < len_old:
-        deleted_count = len_old - len_new
-        changes.append(f"Xóa {deleted_count} dòng cuối (Từ dòng {len_new+1})")
-            
-    if not changes: return "Lưu (Không có thay đổi nội dung)"
-    return " | ".join(changes)
+    if not changes: return "Lưu (Không thay đổi nội dung)"
+    return "\n".join(changes)
 
 # --- LOGIN ---
 def check_login():
@@ -515,7 +533,7 @@ def save_block_config_to_sheet(df_current_ui, current_block_name, creds, user_id
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: df_server[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
     
-    # Lấy data cũ của block để so sánh
+    # Lấy data cũ để so sánh
     df_server_old_block = df_server[df_server[COL_BLOCK_NAME] == current_block_name].copy().reset_index(drop=True)
     
     df_other = df_server[df_server[COL_BLOCK_NAME] != current_block_name]
@@ -524,7 +542,7 @@ def save_block_config_to_sheet(df_current_ui, current_block_name, creds, user_id
         if c in df_save.columns: df_save = df_save.drop(columns=[c])
     df_save[COL_BLOCK_NAME] = current_block_name
     
-    # --- LOG CHI TIẾT ---
+    # --- [V18] LOG CHI TIẾT ---
     detail_log = detect_changes_detailed(df_server_old_block, df_save)
     log_user_action(creds, user_id, f"Sửa cấu hình: {current_block_name}", detail_log)
     
@@ -590,9 +608,9 @@ def show_note_popup(creds, all_blocks, user_id):
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    ### Hướng Dẫn (V17):
-    1. **Log chi tiết:** Hệ thống sẽ ghi lại cụ thể bạn sửa gì (VD: Đổi Link A -> Link B).
-    2. **Note:** Quản lý ghi chú trong Popup.
+    ### Hướng Dẫn (V18 - Audit Trace):
+    1. **Log chi tiết:** Hệ thống sẽ ghi lại cụ thể bạn sửa/xóa dòng nào.
+    2. **Khôi phục:** Bạn có thể xem lại log để lấy lại link cũ nếu lỡ xóa.
     """)
 
 def main_ui():
@@ -601,7 +619,7 @@ def main_ui():
     creds = get_creds()
     
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("🛡️ Kinkin Manager (V17 - Audit Log)"); st.caption(f"User: {user_id}")
+    with c1: st.title("🛡️ Kinkin Manager (V18 - Trace)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
@@ -702,7 +720,7 @@ def main_ui():
         },
         use_container_width=True, 
         num_rows="dynamic",
-        key=f"editor_v17"
+        key=f"editor_v18"
     )
 
     # --- LOGIC UPDATE ---
