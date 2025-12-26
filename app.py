@@ -5,6 +5,7 @@ import gspread
 import json
 import re
 import pytz
+import uuid
 from gspread_dataframe import set_with_dataframe, get_as_dataframe
 from datetime import datetime
 from google.oauth2 import service_account
@@ -12,7 +13,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V13 - UI Note)", layout="wide", page_icon="📝")
+st.set_page_config(page_title="Kinkin Manager (V14 - Note Manager)", layout="wide", page_icon="📝")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -27,8 +28,9 @@ SHEET_CONFIG_NAME = "luu_cau_hinh"
 SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
+SHEET_NOTE_NAME = "ghi_chu_khoi" # Sheet mới để lưu Note riêng
 
-# Định nghĩa Cột
+# Định nghĩa Cột Config
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
 COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
@@ -43,8 +45,12 @@ COL_LOG_ROW = "Dòng dữ liệu"
 COL_FILTER = "Dieu_Kien_Loc"      
 COL_HEADER = "Lay_Header"         
 COL_MODE = "Che_Do_Ghi"           
-COL_NOTE = "Ghi_Chu_User"         # Cột Note nghiệp vụ
 COL_COPY_FLAG = "Copy_Flag" 
+
+# Định nghĩa Cột Note Mới
+NOTE_COL_ID = "ID"
+NOTE_COL_BLOCK = "Tên Khối"
+NOTE_COL_CONTENT = "Nội dung note"
 
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
@@ -102,7 +108,47 @@ def get_sh_with_retry(creds, sheet_id_or_key):
             time.sleep((2 ** i) + 0.5) 
     return None
 
-# --- 3. CORE ETL ---
+# --- 3. LOGIC NOTE RIÊNG (SHEET MỚI) ---
+def load_notes_data(creds):
+    try:
+        sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+        try: wks = sh.worksheet(SHEET_NOTE_NAME)
+        except: 
+            # Tạo sheet mới nếu chưa có
+            wks = sh.add_worksheet(SHEET_NOTE_NAME, rows=100, cols=5)
+            wks.append_row([NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT])
+            return pd.DataFrame(columns=[NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT])
+            
+        df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
+        if df.empty or NOTE_COL_ID not in df.columns:
+             return pd.DataFrame(columns=[NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT])
+        
+        return df.dropna(how='all')
+    except Exception as e:
+        print(f"Lỗi load note: {e}")
+        return pd.DataFrame(columns=[NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT])
+
+def save_notes_data(df_notes, creds):
+    try:
+        sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+        wks = sh.worksheet(SHEET_NOTE_NAME)
+        
+        # Auto gen ID cho dòng mới nếu thiếu
+        for idx, row in df_notes.iterrows():
+            if pd.isna(row[NOTE_COL_ID]) or row[NOTE_COL_ID] == "" or row[NOTE_COL_ID] == "None":
+                df_notes.at[idx, NOTE_COL_ID] = str(uuid.uuid4())[:8] # ID ngắn 8 ký tự
+        
+        # Clean data
+        df_notes = df_notes.astype(str).replace(['nan', 'None', '<NA>'], '')
+        
+        wks.clear()
+        wks.update([df_notes.columns.tolist()] + df_notes.values.tolist())
+        return True
+    except Exception as e:
+        st.error(f"Lỗi lưu Note: {e}")
+        return False
+
+# --- 4. CORE ETL ---
 def fetch_data_v2(row_config, creds):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
@@ -224,7 +270,7 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
                 return True, f"Append thành công (+{len(combined_df)} dòng)"
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}"
 
-# --- 4. HỆ THỐNG LOCK & LOG ---
+# --- 5. SYSTEM ---
 def get_system_lock(creds):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -289,7 +335,7 @@ def save_sys_schedule(df_schedule, creds):
     wks.clear()
     wks.update([df_schedule.columns.tolist()] + df_schedule.fillna('').values.tolist())
 
-# --- 5. PIPELINE ---
+# --- 6. PIPELINE ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -371,10 +417,11 @@ def load_full_config(_creds):
     df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     
     if df.empty:
-        return pd.DataFrame(columns=[COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE])
+        return pd.DataFrame(columns=[COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE])
 
     df = df.dropna(how='all')
-    required_cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
+    # Bỏ cột COL_NOTE khỏi danh sách cột bắt buộc
+    required_cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE]
     for c in required_cols:
         if c not in df.columns: df[c] = ""
     
@@ -391,7 +438,7 @@ def delete_block_direct(block_name_to_delete, creds):
     if COL_BLOCK_NAME not in df_server.columns: return
     df_new = df_server[df_server[COL_BLOCK_NAME] != block_name_to_delete]
     
-    cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
+    cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE]
     for c in cols:
         if c not in df_new.columns: df_new[c] = ""
     wks.clear(); wks.update([cols] + df_new[cols].values.tolist())
@@ -409,7 +456,7 @@ def save_block_config_to_sheet(df_current_ui, current_block_name, creds):
     df_save[COL_BLOCK_NAME] = current_block_name
     
     df_final = pd.concat([df_other, df_save], ignore_index=True).astype(str).replace(['nan', 'None'], '')
-    cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
+    cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE]
     for c in cols:
         if c not in df_final.columns: df_final[c] = ""
     wks.clear(); wks.update([cols] + df_final[cols].values.tolist())
@@ -428,20 +475,47 @@ def rename_block_action(old_name, new_name, creds):
 def save_full_direct(df_full, creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
-    cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
+    cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE]
     df_full = df_full.astype(str).replace(['nan', 'None'], '')
     for c in cols:
          if c not in df_full.columns: df_full[c] = ""
     wks.clear(); wks.update([cols] + df_full[cols].values.tolist())
 
-# --- 7. UI CHÍNH ---
+# --- 7. DIALOG NOTE MANAGER (NEW) ---
+@st.dialog("📝 Quản Lý Ghi Chú Từng Khối", width="large")
+def show_note_manager(creds, available_blocks):
+    st.caption("Quản lý danh sách ghi chú riêng biệt (Lưu tại sheet: `ghi_chu_khoi`)")
+    
+    # Load data
+    df_notes = load_notes_data(creds)
+    
+    # Editor
+    edited_notes = st.data_editor(
+        df_notes,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            NOTE_COL_ID: st.column_config.TextColumn("ID (Auto)", disabled=True, width="small"),
+            NOTE_COL_BLOCK: st.column_config.SelectboxColumn("Tên Khối", options=available_blocks, required=True, width="medium"),
+            NOTE_COL_CONTENT: st.column_config.TextColumn("Nội dung Ghi Chú", width="large"),
+        },
+        key="note_editor_dialog"
+    )
+    
+    if st.button("💾 Lưu Ghi Chú"):
+        if save_notes_data(edited_notes, creds):
+            st.success("Đã lưu thành công!")
+            time.sleep(1)
+            st.rerun()
+
+# --- 8. UI CHÍNH ---
 @st.dialog("📘 TÀI LIỆU", width="large")
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    ### Nguyên lý mới (V13):
-    1. **Note Nghiệp vụ:** Nằm ở góc trên bên phải (dưới nút Tiện ích).
-    2. **Lưu Note:** Nhập nội dung vào ô text và ấn **"💾 Lưu Cấu Hình"**.
+    ### Hướng Dẫn Mới (V14):
+    1. **Note Từng Khối:** Bấm nút **📝 Note_Tung_Khoi** ở cột trái để mở bảng quản lý ghi chú riêng.
+    2. **Sao chép Khối:** Chỉ copy tên và nội dung cấu hình. 
     """)
 
 def main_ui():
@@ -449,29 +523,35 @@ def main_ui():
     user_id = st.session_state['current_user_id']
     creds = get_creds()
     
-    # --- HEADER & SIDEBAR LOGIC ---
-    # Load config first to define 'sel_block'
-    if 'df_full_config' not in st.session_state:
-         st.session_state['df_full_config'] = load_full_config(creds)
-    
-    df_config = st.session_state['df_full_config']
-    blocks = df_config[COL_BLOCK_NAME].unique().tolist() if not df_config.empty else [DEFAULT_BLOCK_NAME]
-    
-    if 'target_block_display' not in st.session_state: st.session_state['target_block_display'] = blocks[0]
-    if st.session_state['target_block_display'] not in blocks: st.session_state['target_block_display'] = blocks[0]
-    
-    current_idx = blocks.index(st.session_state['target_block_display'])
+    c1, c2 = st.columns([3, 1])
+    with c1: st.title("🎯 Kinkin Manager (V14)"); st.caption(f"User: {user_id}")
+    with c2: 
+        with st.popover("Tiện ích"):
+            st.code(BOT_EMAIL_DISPLAY)
+            st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "📋 Copy Email Bot")
 
-    # --- SIDEBAR UI ---
+    # --- SIDEBAR ---
     with st.sidebar:
+        if 'df_full_config' not in st.session_state:
+             st.session_state['df_full_config'] = load_full_config(creds)
+        
         if st.button("🔄 Tải lại dữ liệu"):
             st.cache_data.clear()
             st.session_state['df_full_config'] = load_full_config(creds)
             st.rerun()
 
-        def on_block_change(): st.session_state['target_block_display'] = st.session_state.sb_selected_block
-        sel_block = st.selectbox("Chọn Khối:", blocks, index=current_idx, key="sb_selected_block", on_change=on_block_change)
+        # Block List
+        df_config = st.session_state['df_full_config']
+        blocks = df_config[COL_BLOCK_NAME].unique().tolist() if not df_config.empty else [DEFAULT_BLOCK_NAME]
         
+        # State Focus
+        if 'target_block_display' not in st.session_state: st.session_state['target_block_display'] = blocks[0]
+        if st.session_state['target_block_display'] not in blocks: st.session_state['target_block_display'] = blocks[0]
+            
+        def on_block_change(): st.session_state['target_block_display'] = st.session_state.sb_selected_block
+        sel_block = st.selectbox("Chọn Khối:", blocks, index=blocks.index(st.session_state['target_block_display']), key="sb_selected_block", on_change=on_block_change)
+        
+        # COPY BLOCK
         c_copy_blk, c_blank = st.columns([2, 1])
         if st.button("©️ Sao Chép Khối"):
              new_block_name = f"{sel_block}_bản_sao"
@@ -513,42 +593,18 @@ def main_ui():
         
         st.divider()
         if st.button("📘 Hướng Dẫn"): show_guide()
+        
+        # [NEW] Nút Mở Note Manager
+        if st.button("📝 Note_Tung_Khoi", use_container_width=True):
+            show_note_manager(creds, blocks)
 
-    # --- MAIN TOP LAYOUT (Tiêu đề trái - Note phải) ---
+    # --- EDITOR ---
+    st.subheader(f"Cấu hình: {sel_block}")
     
-    # 1. Lấy data block hiện tại
     current_block_df = st.session_state['df_full_config'][
         st.session_state['df_full_config'][COL_BLOCK_NAME] == sel_block
     ].copy().reset_index(drop=True)
     
-    # 2. Lấy giá trị Note
-    current_note_val = ""
-    if not current_block_df.empty and COL_NOTE in current_block_df.columns:
-        val = str(current_block_df.iloc[0][COL_NOTE])
-        if val != "nan": current_note_val = val
-
-    # 3. Layout Top (Split 70% - 30%)
-    c_head_left, c_head_right = st.columns([2, 1])
-    
-    with c_head_left:
-        st.title(f"📝 {sel_block}")
-        st.caption(f"User: {user_id}")
-    
-    with c_head_right:
-        # Tiện ích nút Copy & Info
-        with st.popover("🛠️ Tiện ích nhanh", use_container_width=True):
-            st.code(BOT_EMAIL_DISPLAY)
-            st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "📋 Copy Email Bot")
-        
-        # [NEW] Note Area ngay dưới tiện ích
-        block_note_input = st.text_area(
-            "Ghi chú nghiệp vụ (Block Note):", 
-            value=current_note_val, 
-            height=100,
-            key=f"note_area_v13" # Key tĩnh để không bị reset khi đổi block (value sẽ tự update do rerun)
-        )
-
-    # --- DATA EDITOR (Ẩn cột Note) ---
     if COL_COPY_FLAG not in current_block_df.columns: current_block_df.insert(0, COL_COPY_FLAG, False)
     else: current_block_df[COL_COPY_FLAG] = False
     
@@ -569,12 +625,11 @@ def main_ui():
             COL_HEADER: st.column_config.CheckboxColumn(default=True),
             COL_RESULT: st.column_config.TextColumn(disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn(disabled=True),
-            COL_BLOCK_NAME: None,
-            COL_NOTE: None # Ẩn cột Note
+            COL_BLOCK_NAME: None
         },
         use_container_width=True, 
         num_rows="dynamic",
-        key=f"editor_v13"
+        key=f"editor_v14"
     )
 
     # --- LOGIC UPDATE ---
@@ -590,13 +645,10 @@ def main_ui():
         edited_df = pd.DataFrame(new_rows)
         has_changes = True
 
-    # Cập nhật RAM (Bao gồm Note mới từ text_area)
+    # Cập nhật RAM
     df_to_merge = edited_df.copy()
     if 'STT' in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=['STT'])
     if COL_COPY_FLAG in df_to_merge.columns: df_to_merge = df_to_merge.drop(columns=[COL_COPY_FLAG])
-    
-    # [QUAN TRỌNG] Gán Note
-    df_to_merge[COL_NOTE] = block_note_input 
     
     df_full = st.session_state['df_full_config']
     df_other = df_full[df_full[COL_BLOCK_NAME] != sel_block]
@@ -615,8 +667,6 @@ def main_ui():
             if not rows: st.warning("Không có việc cần chạy."); st.stop()
             with st.status("Đang chạy...", expanded=True) as status:
                 ok, res_map, total = process_pipeline_mixed(rows, user_id, sel_block, status)
-                # Update Note khi chạy xong để không mất
-                edited_df[COL_NOTE] = block_note_input 
                 for i, r in edited_df.iterrows():
                     lnk = str(r.get(COL_SRC_LINK, '')).strip()
                     if lnk in res_map:
@@ -647,8 +697,6 @@ def main_ui():
 
     with c_save:
         if st.button("💾 Lưu Cấu Hình"):
-            # Trước khi lưu, ép giá trị Note vào Dataframe
-            edited_df[COL_NOTE] = block_note_input
             save_block_config_to_sheet(edited_df, sel_block, creds)
             st.cache_data.clear()
             st.session_state['df_full_config'] = load_full_config(creds)
