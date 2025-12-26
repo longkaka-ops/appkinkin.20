@@ -13,10 +13,10 @@ from google.oauth2 import service_account
 import google.auth.transport.requests
 import pytz
 from collections import defaultdict
-from st_copy_to_clipboard import st_copy_to_clipboard
+from st_copy_to_clipboard import st_copy_to_clipboard # Cần cài đặt trong requirements.txt
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Data Manager (Ultimate)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Kinkin Data Manager (Ultimate V3)", layout="wide", page_icon="🚀")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -32,7 +32,7 @@ SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 
-# Định nghĩa Cột (GỐC + MỚI)
+# Định nghĩa Cột
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
 COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
@@ -105,16 +105,13 @@ def get_sh_with_retry(creds, sheet_id_or_key):
             time.sleep((2 ** i) + 0.5) 
     return None
 
-# --- 3. CORE LOGIC (CẢI TIẾN + GIỮ GỐC) ---
+# --- 3. CORE LOGIC (GIỮ NGUYÊN) ---
 
 def fetch_data_v2(row_config, creds):
-    # Lấy thông tin từ cấu hình
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
     data_range_str = str(row_config.get(COL_DATA_RANGE, 'Lấy hết')).strip()
-    
-    # Tính năng mới
     filter_query = str(row_config.get(COL_FILTER, '')).strip()
     include_header = str(row_config.get(COL_HEADER, 'TRUE')).strip().upper() == 'TRUE'
 
@@ -139,7 +136,6 @@ def fetch_data_v2(row_config, creds):
             else:
                 df = pd.DataFrame(data)
             
-            # Cắt cột (Range) - Giữ logic gốc
             if data_range_str != "Lấy hết" and ":" in data_range_str:
                 try:
                     start_col_str, end_col_str = data_range_str.split(":")
@@ -150,10 +146,8 @@ def fetch_data_v2(row_config, creds):
                         df = df.iloc[:, start_idx : end_idx + 1]
                 except: pass
 
-            # Lọc dữ liệu (Tính năng mới)
             if filter_query and filter_query.lower() not in ['nan', '']:
-                try:
-                    df = df.query(filter_query)
+                try: df = df.query(filter_query)
                 except Exception as e: return None, sheet_id, f"⚠️ Lỗi lọc: {e}"
 
             df = df.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
@@ -165,14 +159,12 @@ def fetch_data_v2(row_config, creds):
         return None, sheet_id, f"Lỗi tải: {str(e)}"
 
     if df is not None:
-        # Cột tạm hệ thống
         df['__Link_Source__'] = link_src
         df['__Thang__'] = month_val
         return df, sheet_id, status_msg
     return None, sheet_id, "Không lấy được dữ liệu"
 
 def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
-    """Hàm gốc: Quét file đích để biết link nguồn nào nằm ở dòng nào"""
     results = {}
     try:
         target_id = extract_id(target_link)
@@ -186,7 +178,6 @@ def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
         if not all_data: return {}
         
         headers = all_data[0]
-        # Tìm cột Link file nguồn
         try: link_col_idx = headers.index("Link file nguồn")
         except ValueError: return {} 
         
@@ -204,7 +195,6 @@ def scan_realtime_row_ranges(target_link, target_sheet_name, creds):
     return results
 
 def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode="APPEND"):
-    """Hàm ghi: Cải tiến thêm Table Mode + Fix lỗi IncorrectCellLabel"""
     try:
         target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi"
@@ -213,19 +203,15 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
-        # --- MODE TABLE (MỚI) ---
         if write_mode == "TABLE":
             if not tasks_list: return True, "Không có data"
             combined_df = pd.concat([t[0] for t in tasks_list], ignore_index=True)
-            
-            # Bỏ cột tạm
             cols_to_drop = [c for c in ['__Link_Source__', '__Thang__'] if c in combined_df.columns]
             combined_df = combined_df.drop(columns=cols_to_drop)
 
             if combined_df.empty or len(combined_df.columns) == 0:
                 return True, "Data rỗng (Check lại bộ lọc)"
 
-            # Xóa vùng cũ (Giữ Header)
             num_cols = len(combined_df.columns)
             last_col_char = gspread.utils.rowcol_to_a1(1, max(1, num_cols)).replace("1", "")
             try: wks.batch_clear([f"A2:{last_col_char}"])
@@ -233,8 +219,6 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
             
             set_with_dataframe(wks, combined_df, row=2, col=1, include_index=False, include_column_header=False)
             return True, f"Đã làm mới Table ({len(combined_df)} dòng)"
-
-        # --- MODE APPEND (GỐC) ---
         else:
             links_to_remove = [t[1] for t in tasks_list if t[1]]
             existing_headers = []
@@ -242,8 +226,6 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
             except: pass
             
             col_link_name = "Link file nguồn"
-            
-            # Logic xóa cũ
             if existing_headers and links_to_remove and col_link_name in existing_headers:
                 try: 
                     link_col_idx = existing_headers.index(col_link_name) + 1
@@ -265,7 +247,6 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
                         if delete_reqs: sh.batch_update({'requests': delete_reqs})
                 except: pass
 
-            # Append mới
             final_df_list = []
             for df, src_link in tasks_list:
                 df = df.rename(columns={'__Link_Source__': col_link_name, '__Thang__': 'Tháng'})
@@ -286,7 +267,7 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
 
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}"
 
-# --- 4. HỆ THỐNG LOCK & LOG & SCHEDULE (GỐC) ---
+# --- 4. HỆ THỐNG LOCK & LOG & SCHEDULE ---
 def get_system_lock(creds):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -297,7 +278,6 @@ def get_system_lock(creds):
             return False, "", ""
         val = wks.cell(2, 1).value
         if val == "TRUE":
-            # Timeout 30p
             time_str = wks.cell(2, 3).value
             try:
                 if (datetime.now() - datetime.strptime(time_str, "%d/%m/%Y %H:%M:%S")).total_seconds() > 1800: return False, "", ""
@@ -325,8 +305,19 @@ def write_detailed_log(creds, log_data_list):
         wks.append_rows(log_data_list)
     except: pass
 
+# [MỚI] Hàm tải log về để hiển thị UI
+def fetch_recent_logs(creds, limit=50):
+    try:
+        sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+        wks = sh.worksheet(SHEET_LOG_NAME)
+        # Lấy hết và sort ngược lại để thấy mới nhất
+        df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
+        if df.empty: return pd.DataFrame()
+        # Giả sử cột Thời gian là cột đầu, sort theo nó nếu cần, hoặc đơn giản lấy 50 dòng cuối
+        return df.tail(limit).iloc[::-1] # Đảo ngược để dòng cuối lên đầu
+    except: return pd.DataFrame()
+
 def load_sys_schedule(creds):
-    """Hàm gốc: Load cấu hình hẹn giờ"""
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_SYS_CONFIG)
@@ -344,7 +335,7 @@ def save_sys_schedule(df_schedule, creds):
     wks.clear()
     wks.update([df_schedule.columns.tolist()] + df_schedule.fillna('').values.tolist())
 
-# --- 5. PIPELINE XỬ LÝ (Kết hợp UI Status) ---
+# --- 5. PIPELINE XỬ LÝ ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -366,7 +357,6 @@ def check_permissions_strict(rows_to_run, creds):
 
 def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_container=None):
     creds = get_creds()
-    # Check Lock
     is_locked, locking_user, lock_time = get_system_lock(creds)
     if is_locked and locking_user != user_id and "Auto" not in user_id:
         return False, f"HỆ THỐNG ĐANG BẬN! {locking_user} đang chạy.", 0
@@ -392,7 +382,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
             if status_container: status_container.write(f"⏳ Xử lý nhóm {idx+1}/{len(grouped_tasks)}: ...{target_link[-10:]}")
             
             tasks_list = []
-            # 1. Fetch
             for row in group_rows:
                 s_link = row.get(COL_SRC_LINK, '')
                 df, sid, msg = fetch_data_v2(row, creds)
@@ -404,25 +393,19 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     global_results_map[s_link] = ("Lỗi tải", "")
                     log_entries.append([time_now, row.get(COL_DATA_RANGE), row.get(COL_MONTH), user_id, s_link, target_link, target_sheet, row.get(COL_SRC_SHEET), "Lỗi tải", "0", "", block_name_run])
 
-            # 2. Write
             success_update, msg_update = False, "No Data"
             if tasks_list:
                 success_update, msg_update = write_smart_v2(tasks_list, target_link, target_sheet, creds, write_mode)
                 if not success_update: all_success = False
             
-            # 3. Scan Realtime Ranges (Tính năng gốc quan trọng)
             realtime_ranges = scan_realtime_row_ranges(target_link, target_sheet, creds)
             
-            # 4. Map Result
             status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
             for row in group_rows:
                 s_link = str(row.get(COL_SRC_LINK, '')).strip()
                 final_range = realtime_ranges.get(s_link, "")
-                
-                # Update map để trả về UI
                 global_results_map[s_link] = (status_str, final_range if final_range else msg_update)
                 
-                # Log
                 cnt = 0
                 for d, l in tasks_list:
                     if l == s_link: cnt = len(d)
@@ -441,7 +424,6 @@ def load_full_config(creds):
     df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     df = df.dropna(how='all')
     
-    # Đảm bảo đủ cột cũ và mới
     required_cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in required_cols:
         if c not in df.columns: df[c] = ""
@@ -468,7 +450,6 @@ def save_block_config(df_current_ui, current_block_name, creds):
     
     df_final = pd.concat([df_other, df_save], ignore_index=True).astype(str).replace(['nan', 'None'], '')
     
-    # Sort column order
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_final.columns: df_final[c] = ""
@@ -477,8 +458,30 @@ def save_block_config(df_current_ui, current_block_name, creds):
     wks.update([cols] + df_final[cols].values.tolist())
     st.toast("✅ Đã lưu!", icon="💾")
 
+# [MỚI] Hàm Đổi Tên Khối (Rename)
+def rename_block_action(old_name, new_name, creds):
+    if not new_name or new_name == old_name: return False
+    
+    # 1. Update Sheet Config
+    sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+    wks = sh.worksheet(SHEET_CONFIG_NAME)
+    df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
+    if COL_BLOCK_NAME in df.columns:
+        df.loc[df[COL_BLOCK_NAME] == old_name, COL_BLOCK_NAME] = new_name
+        wks.clear(); wks.update([df.columns.tolist()] + df.fillna('').values.tolist())
+    
+    # 2. Update Sheet Schedule
+    try:
+        wks_sch = sh.worksheet(SHEET_SYS_CONFIG)
+        df_sch = get_as_dataframe(wks_sch, evaluate_formulas=True, dtype=str)
+        if COL_BLOCK_NAME in df_sch.columns:
+            df_sch.loc[df_sch[COL_BLOCK_NAME] == old_name, COL_BLOCK_NAME] = new_name
+            wks_sch.clear(); wks_sch.update([df_sch.columns.tolist()] + df_sch.fillna('').values.tolist())
+    except: pass
+    
+    return True
+
 def save_full_direct(df_full, creds):
-    """Hàm hỗ trợ cho nút Chạy Tất Cả"""
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
@@ -489,15 +492,14 @@ def save_full_direct(df_full, creds):
     wks.update([cols] + df_full[cols].values.tolist())
 
 # --- 7. UI CHÍNH ---
-@st.dialog("📘 TÀI LIỆU (Cập nhật)", width="large")
+@st.dialog("📘 TÀI LIỆU", width="large")
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    
     ### Tính năng Mới:
-    1. **Table Mode:** Chọn 'TABLE' ở cột Chế độ ghi để xóa sạch dữ liệu cũ (giữ Header) và ghi mới -> Giữ công thức cột bên cạnh.
-    2. **Bộ Lọc:** Nhập `Cot_A == 'HN'` để lọc dữ liệu trước khi lấy.
-    3. **Copy:** Nút copy nhanh Email Bot ở góc phải.
+    1. **Copy:** Nút copy tên khối và Link Bot.
+    2. **Đổi tên khối:** Vào Sidebar > Sửa tên khối.
+    3. **Log:** Xem nhật ký hoạt động người dùng ở dưới cùng.
     """)
 
 def main_ui():
@@ -505,30 +507,47 @@ def main_ui():
     user_id = st.session_state['current_user_id']
     creds = get_creds()
     
+    # Header
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("🚀 Kinkin Data Manager (Pro)"); st.caption(f"User: {user_id}")
+    with c1: st.title("🚀 Kinkin Data Manager (V3)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
-            st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "Copy Email Bot")
+            st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "📋 Copy Email Bot")
 
+    # --- SIDEBAR: QUẢN LÝ KHỐI (CẬP NHẬT: Copy + Rename) ---
     with st.sidebar:
         if 'df_full_config' not in st.session_state:
             with st.spinner("Load config..."): st.session_state['df_full_config'] = load_full_config(creds)
         
-        # Block Management
         blocks = st.session_state['df_full_config'][COL_BLOCK_NAME].unique().tolist()
         if not blocks: blocks = [DEFAULT_BLOCK_NAME]
-        sel_block = st.selectbox("Chọn Khối:", blocks)
         
-        with st.expander("Thêm/Xóa Khối"):
+        c_sel, c_copy = st.columns([4, 1])
+        with c_sel: sel_block = st.selectbox("Chọn Khối:", blocks)
+        with c_copy: 
+            st.write("") # Spacer
+            st_copy_to_clipboard(sel_block, "📋") # [MỚI] Nút copy tên khối
+            
+        with st.expander("⚙️ Quản lý Khối (Thêm/Sửa/Xóa)"):
+            # Thêm
             new_b = st.text_input("Tên khối mới:")
-            if st.button("➕ Thêm"):
+            if st.button("➕ Tạo Mới"):
                 row = {c: "" for c in st.session_state['df_full_config'].columns}
                 row[COL_BLOCK_NAME] = new_b; row[COL_STATUS] = "Chưa chốt & đang cập nhật"
                 st.session_state['df_full_config'] = pd.concat([st.session_state['df_full_config'], pd.DataFrame([row])], ignore_index=True)
                 st.rerun()
-            if st.button("🗑️ Xóa"):
+                
+            # [MỚI] Sửa tên
+            rename_val = st.text_input("Đổi tên khối thành:", value=sel_block)
+            if st.button("✏️ Đổi Tên") and rename_val != sel_block:
+                if rename_block_action(sel_block, rename_val, creds):
+                    st.toast(f"Đã đổi {sel_block} -> {rename_val}")
+                    del st.session_state['df_full_config']
+                    time.sleep(1); st.rerun()
+                    
+            # Xóa
+            if st.button("🗑️ Xóa Khối"):
                 st.session_state['df_full_config'] = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] != sel_block]
                 save_block_config(pd.DataFrame(), sel_block, creds)
                 st.rerun()
@@ -541,6 +560,7 @@ def main_ui():
     df_show = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] == sel_block].copy().reset_index(drop=True)
     df_show.insert(0, 'STT', range(1, len(df_show)+1))
     
+    # [MỚI] Cấu hình LinkColumn để hiện nút Copy
     edited_df = st.data_editor(
         df_show,
         column_order=["STT", COL_STATUS, COL_MODE, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW, COL_NOTE],
@@ -548,6 +568,11 @@ def main_ui():
             "STT": st.column_config.NumberColumn(width="small", disabled=True),
             COL_STATUS: st.column_config.SelectboxColumn(options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
             COL_MODE: st.column_config.SelectboxColumn(options=["APPEND", "TABLE"], help="APPEND: Nối đuôi | TABLE: Xóa cũ ghi mới"),
+            
+            # [MỚI] Thêm LinkColumn để copy
+            COL_SRC_LINK: st.column_config.LinkColumn("Link Nguồn", display_text="Mở Link", width="medium"), 
+            COL_TGT_LINK: st.column_config.LinkColumn("Link Đích", display_text="Mở Link", width="medium"),
+            
             COL_FILTER: st.column_config.TextColumn(help="VD: Cot_A > 100"),
             COL_HEADER: st.column_config.CheckboxColumn(default=True),
             COL_RESULT: st.column_config.TextColumn(disabled=True),
@@ -557,7 +582,7 @@ def main_ui():
         use_container_width=True, num_rows="dynamic", key=f"edit_{sel_block}"
     )
 
-    # --- SCHEDULE SECTION (GỐC ĐƯỢC PHỤC HỒI) ---
+    # --- SCHEDULE SECTION ---
     st.divider()
     st.markdown(f"**⏰ Cài Đặt Hẹn Giờ (Block: {sel_block})**")
     if 'df_sys_schedule' not in st.session_state: st.session_state['df_sys_schedule'] = load_sys_schedule(creds)
@@ -598,7 +623,6 @@ def main_ui():
                 start = time.time()
                 ok, res_map, total = process_pipeline_mixed(rows, user_id, sel_block, status)
                 
-                # Update UI
                 for i, r in edited_df.iterrows():
                     lnk = str(r.get(COL_SRC_LINK, '')).strip()
                     if lnk in res_map:
@@ -609,27 +633,24 @@ def main_ui():
                 status.update(label=f"Xong! {total} dòng trong {time.time()-start:.1f}s", state="complete")
                 time.sleep(1); st.rerun()
 
-    with c_all: # (GỐC ĐƯỢC PHỤC HỒI)
-        if st.button("🚀 CHẠY TẤT CẢ CÁC KHỐI"):
+    with c_all:
+        if st.button("🚀 CHẠY TẤT CẢ"):
             with st.status("Đang chạy toàn hệ thống...", expanded=True) as status:
                 full_df = load_full_config(creds)
                 all_blks = full_df[COL_BLOCK_NAME].unique()
                 total_all = 0
-                
                 for blk in all_blks:
                     status.write(f"Đang chạy khối: **{blk}**")
                     mask = (full_df[COL_BLOCK_NAME] == blk) & (full_df[COL_STATUS] == "Chưa chốt & đang cập nhật")
                     rows = full_df[mask].to_dict('records')
                     if rows:
-                        _, res_map, cnt = process_pipeline_mixed(rows, f"{user_id} (All)", blk, None) # Run silent
+                        _, res_map, cnt = process_pipeline_mixed(rows, f"{user_id} (All)", blk, None)
                         total_all += cnt
-                        # Update full_df
                         for i, r in full_df[mask].iterrows():
                             lnk = str(r[COL_SRC_LINK]).strip()
                             if lnk in res_map:
                                 full_df.at[i, COL_RESULT] = res_map[lnk][0]
                                 full_df.at[i, COL_LOG_ROW] = res_map[lnk][1]
-                
                 save_full_direct(full_df, creds)
                 st.session_state['df_full_config'] = full_df
                 status.update(label=f"Hoàn tất! Tổng {total_all} dòng.", state="complete")
@@ -647,6 +668,18 @@ def main_ui():
             save_block_config(edited_df, sel_block, creds)
             del st.session_state['df_full_config']
             st.rerun()
+
+    # --- [MỚI] KHU VỰC LOG USER ---
+    st.divider()
+    with st.expander("📜 Nhật ký hoạt động gần đây (Real-time)", expanded=False):
+        if st.button("🔄 Tải lại Log"):
+            st.cache_data.clear() # Clear cache nếu cần
+            
+        df_log = fetch_recent_logs(creds, limit=20)
+        if not df_log.empty:
+            st.dataframe(df_log, use_container_width=True, hide_index=True)
+        else:
+            st.info("Chưa có log nào.")
 
 if __name__ == "__main__":
     main_ui()
