@@ -4,6 +4,7 @@ import time
 import gspread
 import json
 import re
+import pytz  # <--- ĐÃ BỔ SUNG THƯ VIỆN NÀY
 from gspread_dataframe import set_with_dataframe, get_as_dataframe
 from datetime import datetime
 from google.oauth2 import service_account
@@ -11,7 +12,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V9 - Stable Edit)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V10 - Stable)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -288,7 +289,7 @@ def save_sys_schedule(df_schedule, creds):
     wks.clear()
     wks.update([df_schedule.columns.tolist()] + df_schedule.fillna('').values.tolist())
 
-# --- 5. PIPELINE ---
+# --- 5. PIPELINE & PERMISSIONS ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -388,30 +389,42 @@ def delete_block_direct(block_name_to_delete, creds):
     wks = sh.worksheet(SHEET_CONFIG_NAME)
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: return
+    
     df_new = df_server[df_server[COL_BLOCK_NAME] != block_name_to_delete]
     
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_new.columns: df_new[c] = ""
-    wks.clear(); wks.update([cols] + df_new[cols].values.tolist())
+    
+    wks.clear()
+    wks.update([cols] + df_new[cols].values.tolist())
 
+# Chỉ lưu khi ấn nút (Merge an toàn)
 def save_block_config_to_sheet(df_current_ui, current_block_name, creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
+    
     df_server = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
     if COL_BLOCK_NAME not in df_server.columns: df_server[COL_BLOCK_NAME] = DEFAULT_BLOCK_NAME
     
+    # Loại bỏ block cũ
     df_other = df_server[df_server[COL_BLOCK_NAME] != current_block_name]
+    
+    # Dữ liệu từ UI (RAM)
     df_save = df_current_ui.copy()
     for c in ['STT', COL_COPY_FLAG]: 
         if c in df_save.columns: df_save = df_save.drop(columns=[c])
     df_save[COL_BLOCK_NAME] = current_block_name
     
+    # Gộp
     df_final = pd.concat([df_other, df_save], ignore_index=True).astype(str).replace(['nan', 'None'], '')
+    
     cols = [COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE, COL_NOTE]
     for c in cols:
         if c not in df_final.columns: df_final[c] = ""
-    wks.clear(); wks.update([cols] + df_final[cols].values.tolist())
+    
+    wks.clear()
+    wks.update([cols] + df_final[cols].values.tolist())
     st.toast(f"✅ Đã lưu cấu hình: {current_block_name} xuống Google Sheet!", icon="💾")
 
 def rename_block_action(old_name, new_name, creds):
@@ -431,7 +444,8 @@ def save_full_direct(df_full, creds):
     df_full = df_full.astype(str).replace(['nan', 'None'], '')
     for c in cols:
          if c not in df_full.columns: df_full[c] = ""
-    wks.clear(); wks.update([cols] + df_full[cols].values.tolist())
+    wks.clear()
+    wks.update([cols] + df_full[cols].values.tolist())
 
 # --- 7. UI CHÍNH ---
 @st.dialog("📘 TÀI LIỆU", width="large")
@@ -450,7 +464,7 @@ def main_ui():
     creds = get_creds()
     
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("⚡ Kinkin Manager (V9 - Stable)"); st.caption(f"User: {user_id}")
+    with c1: st.title("⚡ Kinkin Manager (V10)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
