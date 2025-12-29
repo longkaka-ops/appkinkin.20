@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V59 - Auto Create & Fix)", layout="wide", page_icon="🛠️")
+st.set_page_config(page_title="Kinkin Manager (V60 - Custom Filter)", layout="wide", page_icon="🛠️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -109,25 +109,76 @@ def extract_id(url):
         except: return None
     return None
 
-def smart_filter_fix(query_str):
-    if not query_str: return ""
-    q = query_str.strip()
-    q = re.sub(r'(?<![<>!=])=(?![=])', '==', q)
-    operators = ["==", "!=", ">=", "<=", ">", "<"]
-    for op in operators:
-        if op in q:
-            parts = q.split(op, 1)
-            left = parts[0].strip(); right = parts[1].strip()
-            if " " in left and not (left.startswith("`") or left.startswith("'") or left.startswith('"')):
-                left = f"`{left}`"
-            return f"{left} {op} {right}"
-    return q
-
 def ensure_sheet_headers(wks, required_columns):
     try:
         current_headers = wks.row_values(1)
         if not current_headers: wks.append_row(required_columns)
     except: pass
+
+# --- [V60] CUSTOM FILTER ENGINE (Trị lỗi Backtick) ---
+def apply_custom_filter_v60(df, filter_str):
+    """
+    Hàm lọc thủ công, không dùng df.query để tránh lỗi syntax.
+    Hỗ trợ: =, ==, !=, >, <, >=, <=, contains
+    """
+    if not filter_str or filter_str.strip() == "": return df, None
+
+    fs = filter_str.strip()
+    
+    # 1. Xử lý toán tử 'contains' (Chứa)
+    if " contains " in fs:
+        parts = fs.split(" contains ", 1)
+        col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+        val = parts[1].strip().replace("'", "").replace('"', "")
+        if col not in df.columns: return None, f"Cột '{col}' không tồn tại"
+        try:
+            return df[df[col].astype(str).str.contains(val, case=False, na=False)], None
+        except Exception as e: return None, str(e)
+
+    # 2. Xử lý các toán tử so sánh
+    # Lưu ý: check >=, <= trước > và <
+    operators = ["==", "!=", ">=", "<=", ">", "<", "="] 
+    selected_op = None
+    
+    for op in operators:
+        if op in fs:
+            selected_op = op
+            break
+            
+    if selected_op:
+        parts = fs.split(selected_op, 1)
+        col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+        val_raw = parts[1].strip()
+        
+        # Xóa quote bao quanh giá trị nếu người dùng lỡ nhập
+        if (val_raw.startswith("'") and val_raw.endswith("'")) or (val_raw.startswith('"') and val_raw.endswith('"')):
+            val_clean = val_raw[1:-1]
+        else:
+            val_clean = val_raw
+
+        if col not in df.columns: return None, f"Cột '{col}' không tồn tại"
+
+        try:
+            if selected_op in ["=", "=="]:
+                # So sánh chuỗi hoặc số
+                return df[df[col].astype(str) == str(val_clean)], None
+            elif selected_op == "!=":
+                return df[df[col].astype(str) != str(val_clean)], None
+            else:
+                # So sánh số học (> < >= <=)
+                # Cần ép kiểu về số
+                numeric_col = pd.to_numeric(df[col], errors='coerce')
+                numeric_val = float(val_clean)
+                
+                if selected_op == ">": return df[numeric_col > numeric_val], None
+                if selected_op == "<": return df[numeric_col < numeric_val], None
+                if selected_op == ">=": return df[numeric_col >= numeric_val], None
+                if selected_op == "<=": return df[numeric_col <= numeric_val], None
+        except Exception as e:
+            return None, f"Lỗi so sánh: {str(e)}"
+
+    # Nếu không tìm thấy toán tử nào hợp lệ
+    return None, f"Không hiểu cú pháp lọc: {fs}"
 
 # --- LOGGING SYSTEM ---
 def init_log_buffer():
@@ -137,6 +188,7 @@ def init_log_buffer():
 def flush_logs(creds, force=False):
     buffer = st.session_state.get('log_buffer', [])
     last_flush = st.session_state.get('last_log_flush', 0)
+    
     if (force or len(buffer) >= LOG_BUFFER_SIZE or (time.time() - last_flush > LOG_FLUSH_INTERVAL)) and buffer:
         try:
             sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -319,7 +371,7 @@ def write_detailed_log(creds, log_data_list):
     except: pass
 
 # ==========================================
-# 4. CORE ETL (V59 - AUTO CREATE SHEET & FIX FILTER)
+# 4. CORE ETL (V60 - CUSTOM FILTER)
 # ==========================================
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
@@ -327,7 +379,6 @@ def fetch_data_v3(row_config, creds, target_headers=None):
     month_val = str(row_config.get(COL_MONTH, ''))
     data_range_str = str(row_config.get(COL_DATA_RANGE, 'Lấy hết')).strip()
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
-    filter_query = smart_filter_fix(raw_filter)
     
     include_header = str(row_config.get(COL_HEADER, 'FALSE')).strip().upper() == 'TRUE'
     sheet_id = extract_id(link_src)
@@ -349,10 +400,11 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         if include_header:
             header_row = data[0]; body_data = data[1:] 
         else:
-            body_data = data[1:] # V59: Không Header? thì lấy từ dòng 2 (bỏ dòng 1 gốc)
+            body_data = data[1:] 
 
         df_body = pd.DataFrame(body_data)
         
+        # Mapping Cột (Nếu có)
         if target_headers:
             num_src = len(df_body.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
@@ -360,6 +412,7 @@ def fetch_data_v3(row_config, creds, target_headers=None):
             df_body = df_body.rename(columns=rename_map)
             if num_src > num_tgt: df_body = df_body.iloc[:, :num_tgt]
 
+        # Range
         if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
                 s_str, e_str = data_range_str.split(":")
@@ -367,12 +420,13 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_body = df_body.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        if filter_query and filter_query.lower() not in ['nan', '']:
-            try: 
-                # [V59 FIX] Thêm engine='python' để hỗ trợ Tiếng Việt & Backtick
-                df_body = df_body.query(filter_query, engine='python')
-            except Exception as e: return None, sheet_id, f"⚠️ Query Lỗi: {e}"
+        # Filter [V60 FIX]
+        if raw_filter:
+            df_filtered, err = apply_custom_filter_v60(df_body, raw_filter)
+            if err: return None, sheet_id, f"⚠️ Lỗi Lọc: {err}"
+            df_body = df_filtered
 
+        # Re-attach Header
         if include_header and header_row:
             current_cols = df_body.columns.tolist()
             adjusted_header = []
@@ -434,12 +488,10 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
         log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
         
-        # [V59] Auto Create Sheet
-        try: 
-            wks = sh.worksheet(real_sheet_name)
+        try: wks = sh.worksheet(real_sheet_name)
         except: 
             wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-            log_container.write(f"✨ Chưa có sheet '{real_sheet_name}', đã tạo mới.")
+            log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
         
         df_new_all = pd.DataFrame()
         for df, src_link, idx in tasks_list:
@@ -562,6 +614,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                             calc = r_map.get(row_idx, "")
                             res_map[row_idx] = ("Thành công" if ok else "Lỗi", calc)
                             log_ents.append([now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), "OK", "", calc, block_name_run])
+        
         write_detailed_log(creds, log_ents)
         
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
@@ -655,7 +708,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V58 - Fix Filter)", help="V58: Engine Python + Header Fix"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V60 - Custom Filter)", help="V60: Filter thủ công + Tạo sheet đích"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -751,7 +804,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v58"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v60"
     )
 
     if edt_df[COL_COPY_FLAG].any():
