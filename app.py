@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V64 - Smart Filter)", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="Kinkin Manager (V65 - Stable Core)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -93,16 +93,13 @@ def safe_api_call(func, *args, **kwargs):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            # Lỗi 429 thường chứa '429' hoặc 'Quota exceeded'
             error_str = str(e).lower()
             if "429" in error_str or "quota" in error_str:
-                wait_time = (2 ** i) + 5 # Chờ 6s, 7s, 9s, 13s...
+                wait_time = (2 ** i) + 5 
                 print(f"⚠️ Quota exceeded. Waiting {wait_time}s...")
                 time.sleep(wait_time)
-            elif i == max_retries - 1:
-                raise e # Hết lượt thử thì báo lỗi thật
-            else:
-                time.sleep(2) # Lỗi khác chờ ít hơn
+            elif i == max_retries - 1: raise e
+            else: time.sleep(2)
     return None
 
 def get_sh_with_retry(creds, sheet_id_or_key):
@@ -130,88 +127,50 @@ def ensure_sheet_headers(wks, required_columns):
 
 # --- [V64] SMART FILTER ENGINE ---
 def apply_smart_filter_v64(df, filter_str):
-    """
-    Hàm lọc thông minh thay thế df.query để tránh lỗi cú pháp.
-    Hỗ trợ: =, ==, !=, >, <, >=, <=, contains
-    """
-    # 1. Kiểm tra rỗng
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
-        return df, None # Trả về nguyên gốc (Lấy hết)
+        return df, None
 
     fs = filter_str.strip()
-    
-    # 2. Xác định toán tử
-    # Ưu tiên các toán tử dài trước để tránh nhầm lẫn (vd: check '>=' trước '>')
     operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
     selected_op = None
     for op in operators:
-        if op in fs: 
-            selected_op = op
-            break
+        if op in fs: selected_op = op; break
             
-    if not selected_op: 
-        return None, f"Lỗi cú pháp: Không tìm thấy toán tử (=, >, contains...) trong '{fs}'"
+    if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
 
-    # 3. Tách chuỗi: [Cột] [Toán tử] [Giá trị]
     parts = fs.split(selected_op, 1)
-    
-    # --- Xử lý Tên Cột (Bên trái) ---
-    # Loại bỏ quote và khoảng trắng thừa: " Tên Cột " -> Tên Cột
     user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
     
-    # Tìm cột trong DataFrame (Match chính xác hoặc Match mờ)
     real_col_name = None
-    if user_col in df.columns: 
-        real_col_name = user_col
+    if user_col in df.columns: real_col_name = user_col
     else:
-        # Thử tìm cột bằng cách bỏ khoảng trắng thừa 2 đầu của cột trong DF
         for col in df.columns:
-            if str(col).strip() == user_col: 
-                real_col_name = col
-                break
+            if str(col).strip() == user_col: real_col_name = col; break
     
-    if not real_col_name: 
-        return None, f"Không tìm thấy cột '{user_col}'. Cột hiện có: {list(df.columns)}"
+    if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'. Cột hiện có: {list(df.columns)}"
 
-    # --- Xử lý Giá trị (Bên phải) ---
     user_val = parts[1].strip()
-    # Loại bỏ dấu nháy bao quanh nếu có: 'Giá trị' -> Giá trị
     if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
         clean_val = user_val[1:-1]
-    else:
-        clean_val = user_val
+    else: clean_val = user_val
 
-    # --- Thực thi Lọc (Python native) ---
     try:
-        # Ép kiểu cột về String để so sánh an toàn
         col_series_str = df[real_col_name].astype(str)
-        
         if selected_op == " contains ":
             return df[col_series_str.str.contains(clean_val, case=False, na=False)], None
-        
         elif selected_op in ["=", "=="]:
             return df[col_series_str == str(clean_val)], None
-            
         elif selected_op == "!=":
             return df[col_series_str != str(clean_val)], None
-            
         else:
-            # So sánh số học (> < >= <=)
-            # Cần ép kiểu sang số, lỗi thành NaN
             numeric_col = pd.to_numeric(df[real_col_name], errors='coerce')
-            try:
-                numeric_val = float(clean_val)
-            except:
-                return None, f"Giá trị '{clean_val}' không phải là số để so sánh {selected_op}"
-                
+            try: numeric_val = float(clean_val)
+            except: return None, f"Giá trị '{clean_val}' không phải là số"
             if selected_op == ">": return df[numeric_col > numeric_val], None
             if selected_op == "<": return df[numeric_col < numeric_val], None
             if selected_op == ">=": return df[numeric_col >= numeric_val], None
             if selected_op == "<=": return df[numeric_col <= numeric_val], None
-            
-    except Exception as e:
-        return None, f"Lỗi thực thi lọc: {str(e)}"
-
+    except Exception as e: return None, f"Lỗi thực thi lọc: {str(e)}"
     return df, None
 
 # --- LOGGING SYSTEM ---
@@ -398,26 +357,25 @@ def write_detailed_log(creds, log_data_list):
         except: 
             wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=15)
             wks.append_row(["Thời gian", "Vùng lấy", "Tháng", "User", "Link Nguồn", "Link Đích", "Sheet Đích", "Sheet Nguồn", "Kết Quả", "Số Dòng", "Range", "Block"])
-        
         safe_api_call(wks.append_rows, log_data_list)
     except: pass
 
 # ==========================================
-# 4. CORE ETL (V64 - SMART FILTER + AUTO CREATE)
+# 4. CORE ETL (V65 - HEADER FIX)
 # ==========================================
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
     
-    # 1. Xử lý Range trống -> Lấy hết
+    # 1. Range
     raw_range = str(row_config.get(COL_DATA_RANGE, '')).strip()
     if raw_range.lower() in ['nan', 'none', 'null', '', 'lấy hết']:
         data_range_str = "Lấy hết"
     else:
         data_range_str = raw_range
 
-    # 2. Xử lý Filter trống -> Lấy hết
+    # 2. Filter
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
     if raw_filter.lower() in ['nan', 'none', 'null']: raw_filter = ""
     
@@ -435,21 +393,35 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = safe_api_call(wks_source.get_all_values)
         if not data: return pd.DataFrame(), sheet_id, "Sheet trắng/Lỗi tải"
 
-        header_row = []
-        body_data = []
-
+        # [V65] LOGIC HEADER CHUẨN
         if include_header:
-            header_row = data[0]; body_data = data[1:] 
+            # Lấy dòng đầu làm tên cột (Fix lỗi 0,1,2)
+            headers = data[0]
+            
+            # Xử lý tên cột trùng nhau (ví dụ: 2 cột "Số lượng")
+            unique_headers = []
+            seen = {}
+            for col in headers:
+                if col in seen:
+                    seen[col] += 1
+                    unique_headers.append(f"{col}_{seen[col]}")
+                else:
+                    seen[col] = 0
+                    unique_headers.append(col)
+            
+            # Tạo DF với header chuẩn
+            df_body = pd.DataFrame(data[1:], columns=unique_headers)
         else:
-            body_data = data[1:] 
+            # Không lấy header -> Dùng số thứ tự 0,1,2
+            df_body = pd.DataFrame(data[1:]) 
 
-        df_body = pd.DataFrame(body_data)
-        
         # Mapping Cột (Nếu có)
         if target_headers:
             num_src = len(df_body.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
-            rename_map = {i: target_headers[i] for i in range(min_cols)}
+            # Nếu DF có header chuẩn, rename theo thứ tự
+            old_cols = df_body.columns.tolist()
+            rename_map = {old_cols[i]: target_headers[i] for i in range(min_cols)}
             df_body = df_body.rename(columns=rename_map)
             if num_src > num_tgt: df_body = df_body.iloc[:, :num_tgt]
 
@@ -467,19 +439,10 @@ def fetch_data_v3(row_config, creds, target_headers=None):
             if err: return None, sheet_id, f"⚠️ {err}"
             df_body = df_filtered
 
-        # Re-attach Header
-        if include_header and header_row:
-            current_cols = df_body.columns.tolist()
-            adjusted_header = []
-            for i in range(len(current_cols)):
-                if i < len(header_row): adjusted_header.append(header_row[i])
-                else: adjusted_header.append("")
-            df_header = pd.DataFrame([adjusted_header], columns=current_cols)
-            df_final = pd.concat([df_header, df_body], ignore_index=True)
-        else:
-            df_final = df_body
-
-        df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
+        # Clean NaN
+        df_final = df_body.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
+        
+        # Thêm cột hệ thống
         df_final[SYS_COL_LINK] = link_src.strip()
         df_final[SYS_COL_SHEET] = source_label.strip()
         df_final[SYS_COL_MONTH] = month_val.strip()
@@ -530,10 +493,19 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
         log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
         
-        try: wks = sh.worksheet(real_sheet_name)
-        except: 
-            wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-            log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
+        # [V65] Logic mở/tạo sheet BẤT TỬ
+        try:
+            # Lấy danh sách title trước để check
+            all_sheets = safe_api_call(sh.worksheets)
+            sheet_titles = [s.title for s in all_sheets]
+            
+            if real_sheet_name in sheet_titles:
+                wks = sh.worksheet(real_sheet_name)
+            else:
+                wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+                log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
+        except Exception as e:
+            return False, f"Lỗi tạo/mở sheet: {e}", {}
         
         df_new_all = pd.DataFrame()
         for df, src_link, idx in tasks_list:
@@ -543,6 +515,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
 
         existing_headers = safe_api_call(wks.row_values, 1)
         if not existing_headers:
+            # [V65] Header chuẩn, không còn 0,1,2
             final_headers = df_new_all.columns.tolist()
             wks.update(range_name="A1", values=[final_headers])
             existing_headers = final_headers
@@ -555,7 +528,10 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
 
         df_aligned = pd.DataFrame()
         for col in existing_headers:
-            df_aligned[col] = df_new_all[col] if col in df_new_all.columns else ""
+            if col in df_new_all.columns:
+                df_aligned[col] = df_new_all[col]
+            else:
+                df_aligned[col] = "" # Điền trống nếu thiếu cột
         
         keys = set()
         for idx, row in df_new_all.iterrows():
@@ -569,7 +545,11 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             log_container.write("✅ Đã xóa.")
         
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới...")
+        
+        # [V65] Cập nhật: Nếu xóa hết dòng cũ thì ghi từ dòng 2 (sau header)
+        # Nếu append thì ghi tiếp theo
         next_row = len(safe_api_call(wks.get_all_values)) + 1
+        
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
         for i in range(0, len(new_vals), chunk_size):
@@ -629,9 +609,11 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     tid = extract_id(t_link)
                     if tid:
                         sh_t = get_sh_with_retry(creds, tid)
-                        try: wks_t = sh_t.worksheet(t_sheet)
-                        except: wks_t = None
-                        if wks_t: target_headers = safe_api_call(wks_t.row_values, 1)
+                        # Check exist sheet to get headers if any
+                        all_titles = [s.title for s in safe_api_call(sh_t.worksheets)]
+                        if t_sheet in all_titles:
+                            wks_t = sh_t.worksheet(t_sheet)
+                            target_headers = safe_api_call(wks_t.row_values, 1)
                 except: pass
 
                 tasks = []
@@ -752,7 +734,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V64 - Smart Filter)", help="V64: Auto =, Fix Nan, Quota"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V65 - Stable Core)", help="V65: Header & Sheet Fix"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -847,7 +829,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v64"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v65"
     )
 
     if edt_df[COL_COPY_FLAG].any():
