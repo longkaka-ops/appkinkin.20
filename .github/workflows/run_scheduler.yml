@@ -2,30 +2,41 @@ name: Auto Run Kinkin Job
 
 on:
   schedule:
-    # Chạy mỗi 10 phút (Bạn có thể chỉnh lại tùy ý)
-    # Lưu ý: GitHub Actions có thể trễ vài phút so với giờ hẹn
-    - cron: '*/30 * * * *' 
-  workflow_dispatch: # Cho phép bấm nút chạy tay để test
+    # Chạy mỗi 10 phút (Khớp với logic Lookback 12 phút trong code Python)
+    - cron: '*/20 * * * *' 
+  
+  # Cho phép bấm nút "Run workflow" thủ công để test ngay lập tức
+  workflow_dispatch: 
 
 jobs:
-  run-job:
+  run-auto-job:
     runs-on: ubuntu-latest
+    
+    # Giới hạn thời gian chạy tối đa 15 phút để tránh treo process
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout code
+      # 1. Tải code từ kho về máy ảo
+      - name: Checkout repository code
         uses: actions/checkout@v3
 
+      # 2. Cài đặt Python 3.9 (Ổn định nhất với các thư viện hiện tại)
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+          cache: 'pip' # Cache lại thư viện để các lần sau chạy nhanh hơn
 
+      # 3. Cài đặt các thư viện cần thiết từ requirements.txt
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run Auto Job Script
+      # 4. Chạy file auto_job.py với các biến môi trường bảo mật
+      - name: Execute Auto Job
         env:
-          # Đọc biến môi trường từ Secrets
+          # Lấy thông tin từ GitHub Secrets
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           HISTORY_SHEET_ID: ${{ secrets.HISTORY_SHEET_ID }}
         run: |
