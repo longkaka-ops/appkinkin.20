@@ -880,8 +880,9 @@ def main_ui():
     flush_logs(creds, force=True)
     st.divider(); st.caption("Logs")
     if st.button("Refresh Logs"): st.cache_data.clear()
-    logs = fetch_activity_logs(creds, 20)
+    logs = fetch_activity_logs(creds, 88)
     if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
 
 if __name__ == "__main__":
     main_ui()
+
