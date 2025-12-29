@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V65 - Stable Core)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V66 - Final Fix)", layout="wide", page_icon="✅")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -87,7 +87,6 @@ def get_creds():
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
 def safe_api_call(func, *args, **kwargs):
-    """Bọc API Call để chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -95,7 +94,7 @@ def safe_api_call(func, *args, **kwargs):
         except Exception as e:
             error_str = str(e).lower()
             if "429" in error_str or "quota" in error_str:
-                wait_time = (2 ** i) + 5 
+                wait_time = (2 ** i) + 5
                 print(f"⚠️ Quota exceeded. Waiting {wait_time}s...")
                 time.sleep(wait_time)
             elif i == max_retries - 1: raise e
@@ -125,29 +124,25 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V64] SMART FILTER ENGINE ---
+# --- SMART FILTER ENGINE ---
 def apply_smart_filter_v64(df, filter_str):
     if not filter_str or str(filter_str).strip().lower() in ['nan', 'none', 'null', '']:
         return df, None
-
     fs = filter_str.strip()
     operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
     selected_op = None
     for op in operators:
         if op in fs: selected_op = op; break
-            
     if not selected_op: return None, f"Lỗi cú pháp: Không tìm thấy toán tử trong '{fs}'"
 
     parts = fs.split(selected_op, 1)
     user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
-    
     real_col_name = None
     if user_col in df.columns: real_col_name = user_col
     else:
         for col in df.columns:
             if str(col).strip() == user_col: real_col_name = col; break
-    
-    if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'. Cột hiện có: {list(df.columns)}"
+    if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
 
     user_val = parts[1].strip()
     if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
@@ -361,9 +356,9 @@ def write_detailed_log(creds, log_data_list):
     except: pass
 
 # ==========================================
-# 4. CORE ETL (V65 - HEADER FIX)
+# 4. CORE ETL (V66 - HEADER & RESULT FIX)
 # ==========================================
-def fetch_data_v3(row_config, creds, target_headers=None):
+def fetch_data_v4(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
@@ -393,54 +388,56 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = safe_api_call(wks_source.get_all_values)
         if not data: return pd.DataFrame(), sheet_id, "Sheet trắng/Lỗi tải"
 
-        # [V65] LOGIC HEADER CHUẨN
-        if include_header:
-            # Lấy dòng đầu làm tên cột (Fix lỗi 0,1,2)
-            headers = data[0]
-            
-            # Xử lý tên cột trùng nhau (ví dụ: 2 cột "Số lượng")
-            unique_headers = []
-            seen = {}
-            for col in headers:
-                if col in seen:
-                    seen[col] += 1
-                    unique_headers.append(f"{col}_{seen[col]}")
-                else:
-                    seen[col] = 0
-                    unique_headers.append(col)
-            
-            # Tạo DF với header chuẩn
-            df_body = pd.DataFrame(data[1:], columns=unique_headers)
-        else:
-            # Không lấy header -> Dùng số thứ tự 0,1,2
-            df_body = pd.DataFrame(data[1:]) 
+        # [V66 Logic]: Luôn coi dòng 0 là Header để tạo DF
+        header_row = data[0]
+        body_rows = data[1:]
+        
+        # Xử lý trùng tên cột
+        unique_headers = []
+        seen = {}
+        for col in header_row:
+            if col in seen:
+                seen[col] += 1
+                unique_headers.append(f"{col}_{seen[col]}")
+            else:
+                seen[col] = 0
+                unique_headers.append(col)
+        
+        df_working = pd.DataFrame(body_rows, columns=unique_headers)
 
         # Mapping Cột (Nếu có)
         if target_headers:
-            num_src = len(df_body.columns); num_tgt = len(target_headers)
+            num_src = len(df_working.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
-            # Nếu DF có header chuẩn, rename theo thứ tự
-            old_cols = df_body.columns.tolist()
+            old_cols = df_working.columns.tolist()
             rename_map = {old_cols[i]: target_headers[i] for i in range(min_cols)}
-            df_body = df_body.rename(columns=rename_map)
-            if num_src > num_tgt: df_body = df_body.iloc[:, :num_tgt]
+            df_working = df_working.rename(columns=rename_map)
+            if num_src > num_tgt: df_working = df_working.iloc[:, :num_tgt]
 
         # Range Slicing
         if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
                 s_str, e_str = data_range_str.split(":")
                 s_idx = col_name_to_index(s_str.strip()); e_idx = col_name_to_index(e_str.strip())
-                if s_idx >= 0: df_body = df_body.iloc[:, s_idx : e_idx + 1]
+                if s_idx >= 0: df_working = df_working.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Filter [V64 SMART PARSER]
+        # Filter
         if raw_filter:
-            df_filtered, err = apply_smart_filter_v64(df_body, raw_filter)
+            df_filtered, err = apply_smart_filter_v64(df_working, raw_filter)
             if err: return None, sheet_id, f"⚠️ {err}"
-            df_body = df_filtered
+            df_working = df_filtered
 
-        # Clean NaN
-        df_final = df_body.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
+        # [V66 Logic Header]: Nếu tích Header? -> Chèn Header cũ vào làm dòng dữ liệu 1
+        if include_header:
+            # Tạo dòng header dưới dạng DataFrame
+            # Lưu ý: Lấy tên cột hiện tại (đã rename/slice)
+            df_header_row = pd.DataFrame([df_working.columns.tolist()], columns=df_working.columns)
+            df_final = pd.concat([df_header_row, df_working], ignore_index=True)
+        else:
+            df_final = df_working
+
+        df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
         
         # Thêm cột hệ thống
         df_final[SYS_COL_LINK] = link_src.strip()
@@ -485,7 +482,10 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         safe_api_call(sh.batch_update, {'requests': requests[i:i+batch_size]})
         time.sleep(1)
 
-def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_container):
+def write_strict_sync_v2(tasks_list, target_link, target_sheet_name, creds, log_container):
+    # tasks_list: [(df, src_link, row_idx), ...]
+    result_map = {} # {row_idx: (Msg, Range)}
+    
     try:
         target_id = extract_id(target_link)
         if not target_id: return False, "Link lỗi", {}
@@ -493,29 +493,24 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
         log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
         
-        # [V65] Logic mở/tạo sheet BẤT TỬ
-        try:
-            # Lấy danh sách title trước để check
-            all_sheets = safe_api_call(sh.worksheets)
-            sheet_titles = [s.title for s in all_sheets]
-            
-            if real_sheet_name in sheet_titles:
-                wks = sh.worksheet(real_sheet_name)
-            else:
-                wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-                log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
-        except Exception as e:
-            return False, f"Lỗi tạo/mở sheet: {e}", {}
+        # [V66] Check Exist accurately
+        all_titles = [s.title for s in safe_api_call(sh.worksheets)]
+        if real_sheet_name in all_titles:
+            wks = sh.worksheet(real_sheet_name)
+        else:
+            wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+            log_container.write(f"✨ Tạo mới sheet: {real_sheet_name}")
         
+        # Combine all DFs
         df_new_all = pd.DataFrame()
-        for df, src_link, idx in tasks_list:
+        for df, src_link, r_idx in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         
         if df_new_all.empty: return True, "No Data", {}
 
+        # Handle Headers
         existing_headers = safe_api_call(wks.row_values, 1)
         if not existing_headers:
-            # [V65] Header chuẩn, không còn 0,1,2
             final_headers = df_new_all.columns.tolist()
             wks.update(range_name="A1", values=[final_headers])
             existing_headers = final_headers
@@ -526,13 +521,13 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
                 if col not in updated: updated.append(col); added = True
             if added: wks.update(range_name="A1", values=[updated]); existing_headers = updated; log_container.write("➕ Cập nhật cột hệ thống.")
 
+        # Align Data
         df_aligned = pd.DataFrame()
         for col in existing_headers:
-            if col in df_new_all.columns:
-                df_aligned[col] = df_new_all[col]
-            else:
-                df_aligned[col] = "" # Điền trống nếu thiếu cột
+            if col in df_new_all.columns: df_aligned[col] = df_new_all[col]
+            else: df_aligned[col] = ""
         
+        # Delete Old
         keys = set()
         for idx, row in df_new_all.iterrows():
             keys.add((str(row[SYS_COL_LINK]).strip(), str(row[SYS_COL_SHEET]).strip(), str(row[SYS_COL_MONTH]).strip()))
@@ -544,11 +539,10 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             batch_delete_rows(sh, wks.id, rows_to_del, log_container)
             log_container.write("✅ Đã xóa.")
         
+        # Append New
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới...")
         
-        # [V65] Cập nhật: Nếu xóa hết dòng cũ thì ghi từ dòng 2 (sau header)
-        # Nếu append thì ghi tiếp theo
-        next_row = len(safe_api_call(wks.get_all_values)) + 1
+        start_row = len(safe_api_call(wks.get_all_values)) + 1
         
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
@@ -556,13 +550,16 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
             time.sleep(1)
 
-        range_map = {}
-        curr = next_row
-        for df, src_link, row_idx in tasks_list:
-            count = len(df); end = curr + count - 1
-            range_map[row_idx] = f"{curr} - {end}"
-            curr += count
-        return True, f"Cập nhật {len(df_aligned)} dòng", range_map
+        # [V66] Calc Result Map based on Task List Order
+        current_cursor = start_row
+        for df, src_link, r_idx in tasks_list:
+            count = len(df)
+            end = current_cursor + count - 1
+            result_map[r_idx] = ("Thành công", f"{current_cursor} - {end}")
+            current_cursor += count
+            
+        return True, f"Cập nhật {len(df_aligned)} dòng", result_map
+
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
 
 # --- PIPELINE ---
@@ -599,7 +596,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
             if str(r.get(COL_STATUS, '')).strip() == "Chưa chốt & đang cập nhật":
                 grouped[(str(r.get(COL_TGT_LINK, '')).strip(), str(r.get(COL_TGT_SHEET, '')).strip())].append(r)
         
-        res_map = {}; all_ok = True; total_rows = 0; log_ents = []
+        final_res_map = {}; all_ok = True; total_rows = 0; log_ents = []
         tz = pytz.timezone('Asia/Ho_Chi_Minh'); now = datetime.now(tz).strftime("%d/%m/%Y %H:%M:%S")
 
         for idx, ((t_link, t_sheet), group_rows) in enumerate(grouped.items()):
@@ -609,7 +606,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     tid = extract_id(t_link)
                     if tid:
                         sh_t = get_sh_with_retry(creds, tid)
-                        # Check exist sheet to get headers if any
                         all_titles = [s.title for s in safe_api_call(sh_t.worksheets)]
                         if t_sheet in all_titles:
                             wks_t = sh_t.worksheet(t_sheet)
@@ -621,32 +617,39 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
                     row_idx = r.get('_index', -1)
                     st.write(f"⬇️ Tải: {lnk[-10:]} ({lbl})")
-                    df, sid, msg = fetch_data_v3(r, creds, target_headers)
+                    df, sid, msg = fetch_data_v4(r, creds, target_headers)
                     time.sleep(1.5)
                     
                     if df is not None: 
-                        tasks.append((df, lnk, row_idx)); total_rows += len(df)
+                        tasks.append((df, lnk, row_idx)) # Pass row_idx here!
+                        total_rows += len(df)
                     else: 
                         st.error(f"❌ {msg}")
-                        res_map[row_idx] = ("Lỗi tải", "")
+                        final_res_map[row_idx] = ("Lỗi tải", "")
                     del df; gc.collect()
 
                 if tasks:
-                    ok, msg, r_map = write_strict_sync(tasks, t_link, t_sheet, creds, st)
+                    ok, msg, batch_res_map = write_strict_sync_v2(tasks, t_link, t_sheet, creds, st)
                     if not ok: st.error(msg); all_ok = False
                     else: st.success(msg)
+                    
+                    # Merge Result Map
+                    final_res_map.update(batch_res_map)
+                    
                     del tasks; gc.collect()
+                    
+                    # Create Log Entries
                     for r in group_rows:
                         row_idx = r.get('_index', -1)
-                        if row_idx not in res_map:
-                            calc = r_map.get(row_idx, "")
-                            res_map[row_idx] = ("Thành công" if ok else "Lỗi", calc)
-                            log_ents.append([now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), "OK", "", calc, block_name_run])
+                        res_status, res_range = final_res_map.get(row_idx, ("Lỗi", ""))
+                        
+                        log_ents.append([now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), res_status, "", res_range, block_name_run])
         
         write_detailed_log(creds, log_ents)
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
         log_user_action_buffered(creds, user_id, f"Kết quả chạy {block_name_run}", status_msg, force_flush=True)
-        return all_ok, res_map, total_rows
+        
+        return all_ok, final_res_map, total_rows
     finally: release_lock(creds, user_id)
 
 # ==========================================
@@ -734,7 +737,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V65 - Stable Core)", help="V65: Header & Sheet Fix"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V66 - Final Fix)", help="V66: Header Logic & Result Fix"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -829,7 +832,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v65"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v66"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -852,12 +855,18 @@ def main_ui():
             st_cont = st.status("🚀 Running...", expanded=True)
             ok, res, tot = process_pipeline_mixed(rows, uid, sel_blk, st_cont)
             
+            # [V66 Fix] Cập nhật kết quả vào giao diện theo đúng Index
             if isinstance(res, dict):
                 for i, r in edt_df.iterrows():
-                    if i in res: edt_df.at[i, COL_RESULT] = res[i][0]; edt_df.at[i, COL_LOG_ROW] = res[i][1]
+                    if i in res: 
+                        edt_df.at[i, COL_RESULT] = res[i][0] # Status (Thành công/Lỗi)
+                        edt_df.at[i, COL_LOG_ROW] = res[i][1] # Range (100-200)
+                
+                # Lưu kết quả xuống sheet ngay
                 save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
                 st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False)
-            else: st_cont.update(label="Hệ thống bận!", state="error", expanded=False)
+            else:
+                st_cont.update(label="Hệ thống bận!", state="error", expanded=False)
                 
             st.cache_data.clear(); time.sleep(1); st.rerun()
     
