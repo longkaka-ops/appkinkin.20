@@ -45,7 +45,6 @@ SYS_COL_MONTH = "Tháng"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # Khoảng thời gian nhìn lại (phút). 
-# Vì cron chạy 10p/lần, ta set 12p để trừ hao độ trễ của Github
 LOOKBACK_MINUTES = 12 
 
 # ==========================================
@@ -70,7 +69,15 @@ def get_creds():
         return None
 
 def get_history_sheet_id():
-    return os.environ.get("HISTORY_SHEET_ID")
+    # Lấy ID thô từ biến môi trường
+    raw_id = os.environ.get("HISTORY_SHEET_ID")
+    if not raw_id: return None
+    
+    # [V72 FIX] Tự động trích xuất ID nếu người dùng lỡ điền cả Link
+    extracted = extract_id(raw_id)
+    if extracted:
+        return extracted
+    return raw_id # Nếu không phải link thì trả về nguyên gốc
 
 def safe_api_call(func, *args, **kwargs):
     max_retries = 5
@@ -89,12 +96,20 @@ def safe_api_call(func, *args, **kwargs):
 
 def get_sh_with_retry(creds, sheet_id):
     gc_client = gspread.authorize(creds)
+    # [V72] In ra ID đang cố kết nối để debug (ẩn bớt ký tự)
+    masked_id = sheet_id[:5] + "..." + sheet_id[-5:] if sheet_id and len(sheet_id) > 10 else "N/A"
+    print(f"🔗 Connecting to Master Sheet ID: {masked_id}")
     return safe_api_call(gc_client.open_by_key, sheet_id)
 
 def extract_id(url):
     if not isinstance(url, str): return None
+    # Xử lý trường hợp URL đầy đủ
     if "docs.google.com" in url:
-        try: return url.split("/d/")[1].split("/")[0]
+        try: 
+            # Tìm đoạn giữa /d/ và /
+            match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
+            if match:
+                return match.group(1)
         except: return None
     return None
 
@@ -318,81 +333,51 @@ def write_data(tasks_list, target_link, target_sheet_name, creds):
 # 4. SCHEDULER LOGIC (V71 - SMART CATCH-UP)
 # ==========================================
 def is_time_match(sched_time_str, now_dt):
-    """
-    Kiểm tra xem sched_time_str (HH:MM) có nằm trong khoảng 
-    [now - LOOKBACK, now] không.
-    Ví dụ: Cài 08:05, giờ chạy 08:10 -> Có nằm trong khoảng -> True
-    """
     try:
-        # 1. Parse giờ cài đặt
         h_set, m_set = map(int, sched_time_str.split(":"))
-        
-        # 2. Tạo datetime object cho giờ cài đặt (trong ngày hôm nay)
         sched_dt = now_dt.replace(hour=h_set, minute=m_set, second=0, microsecond=0)
-        
-        # 3. Tính khoảng cách
-        diff = (now_dt - sched_dt).total_seconds() / 60 # Số phút đã trôi qua
-        
-        # 4. Kiểm tra:
-        # - diff >= 0: Giờ cài đặt đã xảy ra (hoặc đang xảy ra)
-        # - diff <= LOOKBACK: Không quá cũ (trong vòng 12 phút)
-        if 0 <= diff <= LOOKBACK_MINUTES:
-            return True
-            
+        diff = (now_dt - sched_dt).total_seconds() / 60 
+        if 0 <= diff <= LOOKBACK_MINUTES: return True
         return False
-    except:
-        return False
+    except: return False
 
 def is_time_to_run_smart(row, now_dt):
     sched_type = str(row.get(SCHED_COL_TYPE, "")).strip()
-    val1 = str(row.get(SCHED_COL_VAL1, "")).strip() # Giờ (08:00) hoặc Phút (30)
-    val2 = str(row.get(SCHED_COL_VAL2, "")).strip() # Ngày hoặc Thứ
+    val1 = str(row.get(SCHED_COL_VAL1, "")).strip()
+    val2 = str(row.get(SCHED_COL_VAL2, "")).strip()
 
     if sched_type == "Không chạy": return False
 
-    # Mapping Thứ
     week_map = {0: "T2", 1: "T3", 2: "T4", 3: "T5", 4: "T6", 5: "T7", 6: "CN"}
     current_wday_str = week_map[now_dt.weekday()]
     current_day_str = str(now_dt.day)
 
     if sched_type == "Chạy theo phút":
-        # Logic: Check xem có mốc chia hết cho interval trong khoảng lookback không
         try:
             interval = int(val1)
             if interval <= 0: return False
-            
             curr_total_min = now_dt.hour * 60 + now_dt.minute
             prev_total_min = curr_total_min - LOOKBACK_MINUTES
-            
-            # Tính số lần interval đã xảy ra tính đến hiện tại
             count_curr = curr_total_min // interval
-            # Tính số lần interval đã xảy ra tính đến lúc trước
             count_prev = prev_total_min // interval
-            
-            # Nếu số lần thay đổi -> Có nghĩa là vừa bước qua 1 mốc interval
-            if count_curr > count_prev:
-                return True
+            if count_curr > count_prev: return True
         except: pass
 
     elif sched_type == "Hàng ngày":
         return is_time_match(val1, now_dt)
 
     elif sched_type == "Hàng tuần":
-        # Check thứ trước
         target_days = [x.strip() for x in val2.split(",")]
-        if current_wday_str in target_days:
-            return is_time_match(val1, now_dt)
+        if current_wday_str in target_days: return is_time_match(val1, now_dt)
 
     elif sched_type == "Hàng tháng":
-        # Check ngày trước
         target_dates = [x.strip() for x in val2.split(",")]
-        if current_day_str in target_dates:
-            return is_time_match(val1, now_dt)
+        if current_day_str in target_dates: return is_time_match(val1, now_dt)
 
     return False
 
 def run_auto_job():
-    print("🚀 Starting Auto Job (V71)...")
+    print("🚀 Starting Auto Job (V72 - ID Auto Fix)...")
     
     creds = get_creds()
     if not creds: return
@@ -402,6 +387,9 @@ def run_auto_job():
         print("❌ Chưa set HISTORY_SHEET_ID"); return
 
     sh_master = get_sh_with_retry(creds, master_id)
+    if not sh_master:
+        print("❌ Không thể mở Sheet Master. Kiểm tra Quyền (Share) hoặc ID.")
+        return
     
     try:
         wks_sched = sh_master.worksheet(SHEET_SYS_CONFIG)
@@ -427,10 +415,9 @@ def run_auto_job():
                 blocks_to_run.append(blk)
     
     if not blocks_to_run:
-        print("💤 Không có lịch phù hợp trong khoảng thời gian này.")
+        print("💤 Không có lịch phù hợp.")
         return
 
-    # Process Blocks
     log_buffer = []
     
     for blk in blocks_to_run:
@@ -452,12 +439,10 @@ def run_auto_job():
             tasks = []
             print(f"📂 Run: {blk} -> {t_sheet}")
             
-            # Fetch
             for r in rows:
                 lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
                 idx = r.get('index_map')
                 
-                # Header? logic cũng nằm trong fetch_data
                 df, msg = fetch_data(r, creds)
                 time.sleep(1.5)
                 
@@ -469,7 +454,6 @@ def run_auto_job():
                         "AUTO_BOT", lnk, t_link, t_sheet, lbl, "Lỗi tải", "0", "", blk
                     ])
 
-            # Write
             if tasks:
                 ok, msg, res_map = write_data(tasks, t_link, t_sheet, creds)
                 print(f"  💾 {msg}")
@@ -484,7 +468,6 @@ def run_auto_job():
                         status, str(count), ranges, blk
                     ])
 
-    # Flush Logs
     if log_buffer:
         print(f"📝 Saving {len(log_buffer)} logs...")
         try:
@@ -494,7 +477,6 @@ def run_auto_job():
         except Exception as e:
             print(f"❌ Log Error: {e}")
 
-    # Activity Log
     try:
         wks_act = sh_master.worksheet(SHEET_ACTIVITY_NAME)
         safe_api_call(wks_act.append_row, [
