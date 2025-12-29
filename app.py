@@ -14,7 +14,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V22 - Standard)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V23 - Final Fix)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -346,30 +346,7 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
         
         last_col_char = gspread.utils.rowcol_to_a1(1, num_cols).replace("1", "") # VD: Z
         
-        # 2. Xóa dữ liệu cũ (Chỉ trong phạm vi cột A -> last_col_char)
-        # Để lại hàng 1 (Header) nếu muốn append, hoặc xóa hết nếu table
-        # Ở đây ta dùng chiến thuật: Xóa hết vùng data cũ trong phạm vi cột, sau đó ghi đè.
-        
         if write_mode == "TABLE":
-            # Chế độ TABLE: Xóa từ A2 đến hết, giữ Header dòng 1
-            # Nhưng để an toàn cho ct bên cạnh, ta chỉ clear vùng A2:Z
-            try: wks.batch_clear([f"A2:{last_col_char}"]) 
-            except: pass
-            
-            # Ghi đè từ A2 (Bỏ header vì header đã có hoặc giữ nguyên)
-            # Nếu muốn ghi cả header mới, thì clear A1. Nhưng thường TABLE giữ header cũ.
-            # Để an toàn nhất: Ghi đè toàn bộ từ A1 (nhưng cẩn thận CT)
-            # Theo yêu cầu: "từ AA trở đi giữ nguyên".
-            
-            # Cách tốt nhất: Clear A:Z. Ghi đè A:Z.
-            # Lưu ý: wks.clear() xóa cả sheet -> SAI.
-            
-            # Thực hiện:
-            # B1. Lấy hết data cũ để biết dòng cuối
-            # B2. Clear A2:{Col_Z}{Max_Row}
-            # B3. Ghi từ A2
-            
-            # Đơn giản hóa: Clear range lớn ước lượng, vd A2:Z5000
             try: wks.batch_clear([f"A2:{last_col_char}10000"]) 
             except: pass
             
@@ -378,18 +355,7 @@ def write_smart_v2(tasks_list, target_link, target_sheet_name, creds, write_mode
             return True, f"Đã làm mới Table ({len(combined_df)} dòng)"
 
         else: # APPEND (Mặc định)
-            # APPEND cũng phải thông minh: Xóa dòng cũ của Link Nguồn này, rồi Append xuống cuối
-            # Nhưng để đơn giản và an toàn theo yêu cầu "như code gốc":
-            # Ta dùng append_rows. Nhưng append_rows ghi xuống dòng trống cuối cùng.
-            
-            # Logic "Xóa dòng cũ của Link này" hơi phức tạp nếu không load hết về.
-            # Nếu user chấp nhận Append nối đuôi:
-            
-            # Ở đây tôi sẽ dùng set_with_dataframe ghi đè từ dòng cuối hiện có + 1
-            # Nhưng cần đảm bảo không ghi sang cột AA.
-            
             # Lấy dòng cuối hiện tại của cột A
-            # (Giả sử cột A luôn có dữ liệu)
             col_a = wks.col_values(1)
             next_row = len(col_a) + 1
             
@@ -459,11 +425,10 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
         grouped_tasks = defaultdict(list)
         
         # [QUAN TRỌNG] Chỉ xử lý dòng "Chưa chốt & đang cập nhật"
-        # Mặc dù UI đã lọc, ta lọc lại lần nữa ở đây cho chắc chắn
         valid_rows = [r for r in rows_to_run if str(r.get(COL_STATUS, '')).strip() == "Chưa chốt & đang cập nhật"]
         
         if not valid_rows:
-             return True, {}, 0 # Không có gì để chạy
+             return True, {}, 0 
 
         for row in valid_rows:
             t_link = str(row.get(COL_TGT_LINK, '')).strip()
@@ -639,10 +604,9 @@ def show_note_popup(creds, all_blocks, user_id):
 def show_guide():
     st.markdown(f"""
     **Email Bot:** `{BOT_EMAIL_DISPLAY}`
-    ### Hướng Dẫn (V22 - Standard):
-    1. **Nguyên lý chuẩn:** Tự động thêm 3 cột Link, Sheet, Tháng khi chạy.
-    2. **An toàn:** Chỉ ghi đè A-Z, không đụng vào AA+.
-    3. **Lọc:** Chỉ chạy dòng "Chưa chốt".
+    ### Hướng Dẫn (V23):
+    1. **Bảng gọn:** Đã ẩn các cột không cần thiết.
+    2. **Log:** Theo dõi chi tiết mọi thay đổi.
     """)
 
 def main_ui():
@@ -651,7 +615,7 @@ def main_ui():
     creds = get_creds()
     
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("🛡️ Kinkin Manager (V22 - Standard)"); st.caption(f"User: {user_id}")
+    with c1: st.title("🛡️ Kinkin Manager (V23 - Final)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"):
             st.code(BOT_EMAIL_DISPLAY)
@@ -758,9 +722,9 @@ def main_ui():
             COL_HEADER: st.column_config.CheckboxColumn("Lay_header", default=True),
             COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Dòng dữ liệu", disabled=True),
-            COL_BLOCK_NAME: None, COL_MODE: None, COL_NOTE: None
+            COL_BLOCK_NAME: None, COL_MODE: None
         },
-        use_container_width=True, num_rows="dynamic", key=f"editor_v22"
+        use_container_width=True, num_rows="dynamic", key=f"editor_v23"
     )
 
     # --- LOGIC UPDATE ---
@@ -791,7 +755,6 @@ def main_ui():
     c_run, c_all, c_scan, c_save = st.columns([2, 2, 1, 1])
     
     with c_run:
-        # [MODIFIED] Filter only "Chưa chốt & đang cập nhật" for running
         if st.button(f"▶️ CHẠY KHỐI: {sel_block}", type="primary"):
             # Lọc ngay tại đây để đếm đúng số dòng sẽ chạy
             all_rows = edited_df.to_dict('records')
@@ -818,7 +781,6 @@ def main_ui():
                 total_all = 0
                 for blk in all_blks:
                     status.write(f"Đang chạy khối: **{blk}**")
-                    # Lọc chặt chẽ ngay từ đầu vào
                     mask = (full_df[COL_BLOCK_NAME] == blk) & (full_df[COL_STATUS] == "Chưa chốt & đang cập nhật")
                     rows = full_df[mask].to_dict('records')
                     if rows:
