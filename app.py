@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG & CONSTANTS
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V44 - Single Hour)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V46 - Header Logic)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -137,7 +137,7 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- LOGGING SYSTEM ---
+# --- LOGGING ---
 def log_user_action(creds, user_id, action, status=""):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -167,7 +167,7 @@ def write_detailed_log(creds, log_data_list):
         wks.append_rows(log_data_list)
     except: pass
 
-# --- LOGIN FUNCTION ---
+# --- LOGIN ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
@@ -176,17 +176,14 @@ def check_login():
         if key in AUTHORIZED_USERS:
             st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[key]; return True
     if st.session_state['logged_in']: return True
-    
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         st.header("🛡️ Đăng nhập")
         pwd = st.text_input("Mật khẩu:", type="password")
         if st.button("Đăng Nhập", use_container_width=True):
             if pwd in AUTHORIZED_USERS:
-                st.session_state['logged_in'] = True
-                st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
-                log_user_action(get_creds(), AUTHORIZED_USERS[pwd], "Đăng nhập", "Success")
-                st.rerun()
+                st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
+                log_user_action(get_creds(), AUTHORIZED_USERS[pwd], "Đăng nhập", "Success"); st.rerun()
             else: st.error("Sai mật khẩu")
     return False
 
@@ -298,7 +295,10 @@ def fetch_data_v3(row_config, creds, target_headers=None):
     data_range_str = str(row_config.get(COL_DATA_RANGE, 'Lấy hết')).strip()
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
     filter_query = smart_filter_fix(raw_filter)
-    include_header = str(row_config.get(COL_HEADER, 'TRUE')).strip().upper() == 'TRUE'
+    
+    # [V46] Logic Header: Tích (TRUE) = Lấy kèm dòng tiêu đề (Dòng 1 + Data)
+    #                     Không Tích (FALSE) = Chỉ lấy Data (Từ dòng 2), ốp vào cột đích
+    include_header = str(row_config.get(COL_HEADER, 'FALSE')).strip().upper() == 'TRUE'
 
     sheet_id = extract_id(link_src)
     if not sheet_id: return None, sheet_id, "Link lỗi"
@@ -314,17 +314,28 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = wks_source.get_all_values()
         if data and len(data) > 0:
             if include_header:
-                headers = data[0]; rows = data[1:]
-                df = pd.DataFrame(rows, columns=headers)
-            else:
+                # Tích TRUE -> Lấy cả header làm data -> Dataframe column sẽ là 0,1,2...
+                # Dòng 1 (Header gốc) sẽ trở thành dòng dữ liệu đầu tiên
                 df = pd.DataFrame(data)
+                
+                # Nếu có Target Header, map tạm để lọc (nhưng vẫn giữ nguyên dòng 1 là data)
+                if target_headers:
+                    # Logic hơi phức tạp: Nếu lấy cả header thì coi như là nối thô
+                    # Không cần map cột vì ta muốn giữ nguyên cấu trúc
+                    pass
+            else:
+                # Tích FALSE (Mặc định) -> Dòng 1 là Header bỏ qua, lấy từ dòng 2
+                # Gán tên cột theo Target Header để khớp cột
+                df = pd.DataFrame(data[1:]) # Bỏ dòng 1
                 if target_headers:
                     num_src = len(df.columns); num_tgt = len(target_headers)
                     min_cols = min(num_src, num_tgt)
+                    # Rename cột 0,1,2... thành tên cột đích
                     rename_map = {i: target_headers[i] for i in range(min_cols)}
                     df = df.rename(columns=rename_map)
                     if num_src > num_tgt: df = df.iloc[:, :num_tgt]
 
+            # Xử lý Range
             if data_range_str != "Lấy hết" and ":" in data_range_str:
                 try:
                     s_str, e_str = data_range_str.split(":")
@@ -332,6 +343,7 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                     if s_idx >= 0: df = df.iloc[:, s_idx : e_idx + 1]
                 except: pass
 
+            # Xử lý Filter
             if filter_query and filter_query.lower() not in ['nan', '']:
                 try: df = df.query(filter_query)
                 except Exception as e: return None, sheet_id, f"⚠️ Lỗi lọc: {e}"
@@ -522,7 +534,7 @@ def load_full_config(_creds):
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
     df[COL_MODE] = df[COL_MODE].replace('', 'APPEND').fillna('APPEND')
-    df[COL_HEADER] = df[COL_HEADER].replace('', 'TRUE').fillna('TRUE')
+    df[COL_HEADER] = df[COL_HEADER].replace('', 'FALSE').fillna('FALSE') # V46 Default FALSE
     if 'STT' in df.columns: df = df.drop(columns=['STT'])
     return df
 
@@ -573,7 +585,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V43 - Final UI)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V46 - Header Logic)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -623,10 +635,8 @@ def main_ui():
                 n_val2 = "" 
 
             elif new_type == "Hàng ngày":
-                # Single hour selection
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
-                # Find index of previous selection
-                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8 # Default 08:00
+                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8
                 n_val1 = st.selectbox("Chọn giờ chạy (0-23h):", hours_opts, index=h_idx)
                 n_val2 = ""
 
@@ -700,11 +710,11 @@ def main_ui():
             COL_SRC_LINK: st.column_config.LinkColumn("Src Link", width="medium"), 
             COL_TGT_LINK: st.column_config.LinkColumn("Tgt Link", width="medium"),
             COL_FILTER: st.column_config.TextColumn("Filter", width="medium"),
-            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=True),
+            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), # Default False
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v43"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v46"
     )
 
     if edt_df[COL_COPY_FLAG].any():
