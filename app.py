@@ -55,7 +55,7 @@ NOTE_COL_ID = "ID"
 NOTE_COL_BLOCK = "Tên Khối"
 NOTE_COL_CONTENT = "Nội dung Note"
 
-# Cột Hệ Thống
+# Cột Hệ Thống (Phải chính xác tuyệt đối)
 SYS_COL_LINK = "Link file nguồn"
 SYS_COL_SHEET = "Sheet nguồn"
 SYS_COL_MONTH = "Tháng"
@@ -267,17 +267,19 @@ def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
     
     headers = all_values[0]
     
-    # Tìm index chính xác của 3 cột hệ thống trong file thực tế
+    # [FIX] Tìm index chính xác của 3 cột hệ thống
     try:
         idx_link = headers.index(SYS_COL_LINK)
         idx_sheet = headers.index(SYS_COL_SHEET)
         idx_month = headers.index(SYS_COL_MONTH)
     except ValueError as e:
-        if log_container: log_container.warning(f"⚠️ Không tìm thấy đủ 3 cột hệ thống trong Header. Có thể đây là file mới hoặc Header bị đổi.")
+        # Nếu không tìm thấy cột, nghĩa là sheet chưa chuẩn -> Không xóa được gì (hoặc xóa hết nếu muốn, nhưng an toàn là return [])
+        if log_container: log_container.warning(f"⚠️ Cảnh báo: Sheet đích chưa có đủ 3 cột hệ thống '{SYS_COL_LINK}', '{SYS_COL_SHEET}', '{SYS_COL_MONTH}'. Hệ thống sẽ tự động thêm vào khi ghi.")
         return [] 
         
     rows_to_delete = []
-    for i, row in enumerate(all_values[1:], start=2): 
+    # Duyệt qua từng dòng để tìm key khớp
+    for i, row in enumerate(all_values[1:], start=2): # Data bắt đầu từ dòng 2
         # Đảm bảo row đủ dài
         l = row[idx_link] if len(row) > idx_link else ""
         s = row[idx_sheet] if len(row) > idx_sheet else ""
@@ -311,7 +313,7 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V31] STRICT COLUMN MAPPING
+    # [V31] STRICT COLUMN MAPPING & CLEAN DELETE
     try:
         target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi", {}
@@ -331,17 +333,18 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             
         if df_new_all.empty: return True, "Không có data mới", {}
 
-        # 2. XỬ LÝ HEADER (QUAN TRỌNG NHẤT)
+        # 2. [QUAN TRỌNG] ĐỒNG BỘ HEADER VÀ CỘT
+        # Lấy Header hiện tại của Sheet
         existing_headers = wks.row_values(1)
         
         if not existing_headers:
-            # Nếu Sheet chưa có Header -> Lấy Header của DF làm chuẩn
+            # Sheet trắng -> Dùng Header của DF làm chuẩn
             final_headers = df_new_all.columns.tolist()
             wks.update(range_name="A1", values=[final_headers])
             existing_headers = final_headers
-            log_container.write("🆕 Khởi tạo Header mới.")
+            log_container.write("🆕 Khởi tạo Header mới cho Sheet trắng.")
         else:
-            # Nếu Sheet đã có Header -> Kiểm tra xem có thiếu 3 cột hệ thống không
+            # Sheet đã có Header -> Kiểm tra xem có 3 cột hệ thống chưa
             updated_headers = existing_headers.copy()
             needed_cols = [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH]
             added = False
@@ -351,34 +354,39 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
                     added = True
             
             if added:
+                # Nếu thiếu cột hệ thống thì thêm vào cuối Header trên Sheet
                 wks.update(range_name="A1", values=[updated_headers])
                 existing_headers = updated_headers
                 log_container.write("➕ Đã bổ sung 3 cột hệ thống vào Header.")
 
-        # 3. ĐỒNG BỘ CỘT CỦA DATAFRAME THEO SHEET (CHỐNG LỆCH CỘT)
-        # Chỉ giữ lại các cột có trong Header của Sheet, và sắp xếp đúng thứ tự đó
+        # 3. ÉP DỮ LIỆU VÀO ĐÚNG CỘT (STRICT MAPPING)
+        # Chỉ lấy những cột có trong Header của Sheet.
+        # Nếu DF có cột thừa -> Bỏ. Nếu DF thiếu cột -> Điền rỗng.
+        # Điều này ngăn chặn việc tự sinh cột mới lệch lạc.
+        
         df_aligned = pd.DataFrame()
         for col in existing_headers:
             if col in df_new_all.columns:
                 df_aligned[col] = df_new_all[col]
             else:
-                df_aligned[col] = "" # Nếu thiếu thì điền rỗng, không để lỗi
+                df_aligned[col] = "" # Thiếu thì điền rỗng
         
-        # 4. Tìm và Xóa dữ liệu cũ
+        # 4. TÌM VÀ XÓA DỮ LIỆU CŨ (Dựa trên Header chuẩn vừa đồng bộ)
         keys_to_delete = set(zip(df_new_all[SYS_COL_LINK], df_new_all[SYS_COL_SHEET], df_new_all[SYS_COL_MONTH]))
-        log_container.write("🔍 Đang tìm dữ liệu cũ...")
+        
+        log_container.write("🔍 Đang tìm dữ liệu cũ để xóa...")
+        # Lúc này Header trên Sheet đã chuẩn (có 3 cột hệ thống), hàm get_rows sẽ chạy đúng.
         rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
         
         if rows_to_del:
-            log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
+            log_container.write(f"✂️ Phát hiện {len(rows_to_del)} dòng cũ. Đang xóa...")
             batch_delete_rows(sh, wks.id, rows_to_del, log_container)
             
-        # 5. Ghi dữ liệu mới (Append đúng chuẩn)
-        log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng...")
+        # 5. GHI DỮ LIỆU MỚI (APPEND)
+        # Dùng append_rows để đảm bảo ghi xuống dưới cùng
+        # convert df_aligned (đã đúng thứ tự cột) sang list
         
-        # Lấy lại tất cả dữ liệu để tìm dòng cuối chính xác (vì vừa xóa xong)
-        all_vals = wks.get_all_values()
-        next_row = len(all_vals) + 1
+        log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng mới...")
         
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
@@ -389,15 +397,27 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             time.sleep(1)
 
         # 6. Tính Range
+        # Lấy lại tất cả để tính range chính xác cho config (Hơi chậm xíu nhưng an toàn)
+        # Hoặc tính toán logic:
+        # Nếu xóa xong, số dòng hiện tại là X. Ta append Y dòng.
+        # Range mới là X+1 -> X+Y.
+        
+        # Tuy nhiên do append_rows có thể ghi vào các dòng trống ở giữa nếu có (ít khả năng nếu deleteDimension).
+        # Để đơn giản và nhanh, ta ước lượng.
+        
+        # Để chính xác:
+        current_data_len = len(wks.get_all_values()) # Đếm lại tổng sau khi ghi
+        start_pointer = current_data_len - len(df_aligned) + 1
+        
         range_map = {}
-        current_pointer = next_row
+        current_pointer = start_pointer
         for df, src_link in tasks_list:
             count = len(df)
             end_pointer = current_pointer + count - 1
             range_map[(src_link, df[SYS_COL_SHEET].iloc[0])] = f"{current_pointer} - {end_pointer}"
             current_pointer += count
 
-        return True, f"Đã cập nhật chuẩn Header ({len(df_aligned)} dòng)", range_map
+        return True, f"Đã cập nhật chuẩn ({len(df_aligned)} dòng)", range_map
 
     except Exception as e: 
         return False, f"Lỗi Ghi: {str(e)}", {}
