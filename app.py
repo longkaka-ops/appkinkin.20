@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V57 - Detail Log)", layout="wide", page_icon="📝")
+st.set_page_config(page_title="Kinkin Manager (V58 - Fix Filter)", layout="wide", page_icon="🛠️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -110,14 +110,18 @@ def extract_id(url):
     return None
 
 def smart_filter_fix(query_str):
+    """Chuẩn hóa cú pháp lọc cho Pandas query"""
     if not query_str: return ""
     q = query_str.strip()
+    # 1. Thay = thành == nếu không phải so sánh
     q = re.sub(r'(?<![<>!=])=(?![=])', '==', q)
+    # 2. Tự thêm dấu huyền ` ` cho tên cột có dấu cách
     operators = ["==", "!=", ">=", "<=", ">", "<"]
     for op in operators:
         if op in q:
             parts = q.split(op, 1)
             left = parts[0].strip(); right = parts[1].strip()
+            # Nếu bên trái có dấu cách và chưa được bao bởi ` ' "
             if " " in left and not (left.startswith("`") or left.startswith("'") or left.startswith('"')):
                 left = f"`{left}`"
             return f"{left} {op} {right}"
@@ -129,7 +133,7 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V57] BUFFERED LOGGING SYSTEM ---
+# --- LOGGING SYSTEM ---
 def init_log_buffer():
     if 'log_buffer' not in st.session_state: st.session_state['log_buffer'] = []
     if 'last_log_flush' not in st.session_state: st.session_state['last_log_flush'] = time.time()
@@ -181,7 +185,6 @@ def detect_df_changes(df_old, df_new):
                 if diff_count >= 3: 
                     changes.append("...")
                     return " | ".join(changes)
-                    
     return " | ".join(changes) if changes else "Không có thay đổi nội dung"
 
 # --- LOGIN ---
@@ -260,7 +263,6 @@ def save_notes_data(df_notes, creds, user_id, block_name):
             for idx, row in df_notes.iterrows():
                 if not row[NOTE_COL_ID]: df_notes.at[idx, NOTE_COL_ID] = str(uuid.uuid4())[:8]
         set_with_dataframe(wks, df_notes, row=1, col=1)
-        # [V57] Log Note Detail
         log_user_action_buffered(creds, user_id, "Lưu Ghi Chú", f"Cập nhật note cho {block_name}", force_flush=True)
         return True
     except: return False
@@ -278,7 +280,6 @@ def show_note_popup(creds, all_blocks, user_id):
         }, key="note_popup"
     )
     if st.button("💾 Lưu Note", type="primary"):
-        # Lấy tên khối đầu tiên trong note để log (hoặc 'Nhiều khối')
         blk_ref = edited_notes[NOTE_COL_BLOCK].iloc[0] if not edited_notes.empty else "All"
         if save_notes_data(edited_notes, creds, user_id, blk_ref):
             st.success("Đã lưu!"); time.sleep(1); st.rerun()
@@ -304,7 +305,6 @@ def save_scheduler_config(df_sched, creds, user_id, type_run, v1, v2):
         for c in cols:
             if c not in df_sched.columns: df_sched[c] = ""
         wks.clear(); set_with_dataframe(wks, df_sched[cols].fillna(""), row=1, col=1)
-        # [V57] Log Scheduler Detail
         msg = f"Cài đặt: {type_run} | {v1} {v2}".strip()
         log_user_action_buffered(creds, user_id, "Cài Lịch Chạy", msg, force_flush=True)
         return True
@@ -331,7 +331,7 @@ def write_detailed_log(creds, log_data_list):
     except: pass
 
 # ==========================================
-# 4. CORE ETL (V57 - ISOLATED HEADER FIX)
+# 4. CORE ETL (V58 - ENGINE FIX & HEADER)
 # ==========================================
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
@@ -355,19 +355,20 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = wks_source.get_all_values()
         if not data: return pd.DataFrame(), sheet_id, "Sheet trắng"
 
-        header_row = []
+        header_row_vals = []
         body_data = []
 
         if include_header:
-            header_row = data[0]
+            # [V58] Tích -> Lấy dòng 0 làm Header để giữ lại
+            header_row_vals = data[0]
             body_data = data[1:] 
         else:
-            body_data = data[1:]
+            # Không tích -> Lấy toàn bộ làm data, không có header riêng để giữ
+            body_data = data
 
-        # Tạo Body DF
         df_body = pd.DataFrame(body_data)
         
-        # Nếu có target headers, rename cột Body để khớp (để filter/range chạy đúng trên body)
+        # Rename cột để lọc (Map theo Target)
         if target_headers:
             num_src = len(df_body.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
@@ -383,24 +384,20 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_body = df_body.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Filtering
+        # Filtering [V58 FIX: engine='python']
         if filter_query and filter_query.lower() not in ['nan', '']:
-            try: df_body = df_body.query(filter_query)
+            try: df_body = df_body.query(filter_query, engine='python')
             except Exception as e: return None, sheet_id, f"⚠️ Query Lỗi: {e}"
 
-        # [V57] Re-attach Header (Logic Fix)
-        if include_header and header_row:
-            # Lấy tên cột hiện tại của df_body (đã bị rename hoặc cắt gọt)
+        # Re-attach Header
+        if include_header and header_row_vals:
+            # Cắt gọt Header Row cho khớp với số cột hiện tại của df_body
             current_cols = df_body.columns.tolist()
             adjusted_header = []
-            
-            # Header row gốc có thể dài hơn body hiện tại (do Range/Target headers cắt bớt)
-            # Ta chỉ lấy phần header tương ứng với các cột còn lại
             for i in range(len(current_cols)):
-                # Logic: Nếu body bị cắt, header cũng phải cắt theo
-                if i < len(header_row): adjusted_header.append(header_row[i])
+                if i < len(header_row_vals): adjusted_header.append(header_row_vals[i])
                 else: adjusted_header.append("")
-                
+            
             df_header = pd.DataFrame([adjusted_header], columns=current_cols)
             df_final = pd.concat([df_header, df_body], ignore_index=True)
         else:
@@ -582,7 +579,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                             log_ents.append([now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), "OK", "", calc, block_name_run])
         
         write_detailed_log(creds, log_ents)
-        # [V57] Log Run Result
+        
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
         log_user_action_buffered(creds, user_id, f"Kết quả chạy {block_name_run}", status_msg, force_flush=True)
         
@@ -674,7 +671,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V57 - Detailed Log)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V58 - Fix Filter)", help="V58: Engine Python + Header Fix"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -710,7 +707,6 @@ def main_ui():
             if new_type == "Chạy theo phút":
                 v = int(d_val1) if (d_type == "Chạy theo phút" and d_val1.isdigit()) else 30
                 n_val1 = str(st.slider("Tần suất (Phút):", 30, 180, max(30, v), 10))
-                n_val2 = "" 
             elif new_type == "Hàng ngày":
                 hours = [f"{i:02d}:00" for i in range(24)]
                 idx = hours.index(d_val1) if (d_type=="Hàng ngày" and d_val1 in hours) else 8
@@ -733,7 +729,6 @@ def main_ui():
                 if SCHED_COL_BLOCK in df_sched.columns: df_sched = df_sched[df_sched[SCHED_COL_BLOCK] != sel_blk]
                 new_r = {SCHED_COL_BLOCK: sel_blk, SCHED_COL_TYPE: new_type, SCHED_COL_VAL1: n_val1, SCHED_COL_VAL2: n_val2}
                 df_sched = pd.concat([df_sched, pd.DataFrame([new_r])], ignore_index=True)
-                # [V57] Pass details to save function
                 save_scheduler_config(df_sched, creds, uid, new_type, n_val1, n_val2)
                 st.success("Đã lưu!"); time.sleep(1); st.rerun()
 
@@ -771,7 +766,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v57"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v58"
     )
 
     if edt_df[COL_COPY_FLAG].any():
