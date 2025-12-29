@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V58 - Fix Filter)", layout="wide", page_icon="🛠️")
+st.set_page_config(page_title="Kinkin Manager (V59 - Auto Create & Fix)", layout="wide", page_icon="🛠️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -110,18 +110,14 @@ def extract_id(url):
     return None
 
 def smart_filter_fix(query_str):
-    """Chuẩn hóa cú pháp lọc cho Pandas query"""
     if not query_str: return ""
     q = query_str.strip()
-    # 1. Thay = thành == nếu không phải so sánh
     q = re.sub(r'(?<![<>!=])=(?![=])', '==', q)
-    # 2. Tự thêm dấu huyền ` ` cho tên cột có dấu cách
     operators = ["==", "!=", ">=", "<=", ">", "<"]
     for op in operators:
         if op in q:
             parts = q.split(op, 1)
             left = parts[0].strip(); right = parts[1].strip()
-            # Nếu bên trái có dấu cách và chưa được bao bởi ` ' "
             if " " in left and not (left.startswith("`") or left.startswith("'") or left.startswith('"')):
                 left = f"`{left}`"
             return f"{left} {op} {right}"
@@ -141,7 +137,6 @@ def init_log_buffer():
 def flush_logs(creds, force=False):
     buffer = st.session_state.get('log_buffer', [])
     last_flush = st.session_state.get('last_log_flush', 0)
-    
     if (force or len(buffer) >= LOG_BUFFER_SIZE or (time.time() - last_flush > LOG_FLUSH_INTERVAL)) and buffer:
         try:
             sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -162,29 +157,22 @@ def log_user_action_buffered(creds, user_id, action, status="", force_flush=Fals
     flush_logs(creds, force=force_flush)
 
 def detect_df_changes(df_old, df_new):
-    if len(df_old) != len(df_new):
-        return f"Thay đổi số lượng dòng: {len(df_old)} -> {len(df_new)}"
-    
+    if len(df_old) != len(df_new): return f"Thay đổi dòng: {len(df_old)} -> {len(df_new)}"
     changes = []
     ignore_cols = [COL_BLOCK_NAME, COL_LOG_ROW, COL_RESULT, "STT", COL_COPY_FLAG, "_index"]
     compare_cols = [c for c in df_new.columns if c not in ignore_cols and c in df_old.columns]
-    
-    dfo = df_old.reset_index(drop=True)
-    dfn = df_new.reset_index(drop=True)
-    
+    dfo = df_old.reset_index(drop=True); dfn = df_new.reset_index(drop=True)
     diff_count = 0
     for i in range(len(dfo)):
         for col in compare_cols:
-            val_old = str(dfo.at[i, col]).strip()
-            val_new = str(dfn.at[i, col]).strip()
+            val_old = str(dfo.at[i, col]).strip(); val_new = str(dfn.at[i, col]).strip()
             if val_old != val_new:
                 vo = (val_old[:15] + '..') if len(val_old) > 15 else val_old
                 vn = (val_new[:15] + '..') if len(val_new) > 15 else val_new
                 changes.append(f"Dòng {i+1} [{col}]: {vo} -> {vn}")
                 diff_count += 1
                 if diff_count >= 3: 
-                    changes.append("...")
-                    return " | ".join(changes)
+                    changes.append("..."); return " | ".join(changes)
     return " | ".join(changes) if changes else "Không có thay đổi nội dung"
 
 # --- LOGIN ---
@@ -331,7 +319,7 @@ def write_detailed_log(creds, log_data_list):
     except: pass
 
 # ==========================================
-# 4. CORE ETL (V58 - ENGINE FIX & HEADER)
+# 4. CORE ETL (V59 - AUTO CREATE SHEET & FIX FILTER)
 # ==========================================
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
@@ -355,20 +343,16 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = wks_source.get_all_values()
         if not data: return pd.DataFrame(), sheet_id, "Sheet trắng"
 
-        header_row_vals = []
+        header_row = []
         body_data = []
 
         if include_header:
-            # [V58] Tích -> Lấy dòng 0 làm Header để giữ lại
-            header_row_vals = data[0]
-            body_data = data[1:] 
+            header_row = data[0]; body_data = data[1:] 
         else:
-            # Không tích -> Lấy toàn bộ làm data, không có header riêng để giữ
-            body_data = data
+            body_data = data[1:] # V59: Không Header? thì lấy từ dòng 2 (bỏ dòng 1 gốc)
 
         df_body = pd.DataFrame(body_data)
         
-        # Rename cột để lọc (Map theo Target)
         if target_headers:
             num_src = len(df_body.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
@@ -376,7 +360,6 @@ def fetch_data_v3(row_config, creds, target_headers=None):
             df_body = df_body.rename(columns=rename_map)
             if num_src > num_tgt: df_body = df_body.iloc[:, :num_tgt]
 
-        # Range Slicing
         if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
                 s_str, e_str = data_range_str.split(":")
@@ -384,27 +367,24 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_body = df_body.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Filtering [V58 FIX: engine='python']
         if filter_query and filter_query.lower() not in ['nan', '']:
-            try: df_body = df_body.query(filter_query, engine='python')
+            try: 
+                # [V59 FIX] Thêm engine='python' để hỗ trợ Tiếng Việt & Backtick
+                df_body = df_body.query(filter_query, engine='python')
             except Exception as e: return None, sheet_id, f"⚠️ Query Lỗi: {e}"
 
-        # Re-attach Header
-        if include_header and header_row_vals:
-            # Cắt gọt Header Row cho khớp với số cột hiện tại của df_body
+        if include_header and header_row:
             current_cols = df_body.columns.tolist()
             adjusted_header = []
             for i in range(len(current_cols)):
-                if i < len(header_row_vals): adjusted_header.append(header_row_vals[i])
+                if i < len(header_row): adjusted_header.append(header_row[i])
                 else: adjusted_header.append("")
-            
             df_header = pd.DataFrame([adjusted_header], columns=current_cols)
             df_final = pd.concat([df_header, df_body], ignore_index=True)
         else:
             df_final = df_body
 
         df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
-        
         df_final[SYS_COL_LINK] = link_src.strip()
         df_final[SYS_COL_SHEET] = source_label.strip()
         df_final[SYS_COL_MONTH] = month_val.strip()
@@ -453,8 +433,13 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         sh = get_sh_with_retry(creds, target_id)
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
         log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
-        try: wks = sh.worksheet(real_sheet_name)
-        except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+        
+        # [V59] Auto Create Sheet
+        try: 
+            wks = sh.worksheet(real_sheet_name)
+        except: 
+            wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
+            log_container.write(f"✨ Chưa có sheet '{real_sheet_name}', đã tạo mới.")
         
         df_new_all = pd.DataFrame()
         for df, src_link, idx in tasks_list:
@@ -577,7 +562,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                             calc = r_map.get(row_idx, "")
                             res_map[row_idx] = ("Thành công" if ok else "Lỗi", calc)
                             log_ents.append([now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), "OK", "", calc, block_name_run])
-        
         write_detailed_log(creds, log_ents)
         
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
@@ -707,6 +691,7 @@ def main_ui():
             if new_type == "Chạy theo phút":
                 v = int(d_val1) if (d_type == "Chạy theo phút" and d_val1.isdigit()) else 30
                 n_val1 = str(st.slider("Tần suất (Phút):", 30, 180, max(30, v), 10))
+                n_val2 = "" 
             elif new_type == "Hàng ngày":
                 hours = [f"{i:02d}:00" for i in range(24)]
                 idx = hours.index(d_val1) if (d_type=="Hàng ngày" and d_val1 in hours) else 8
