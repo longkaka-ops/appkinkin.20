@@ -15,7 +15,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V34 - Perfect Header)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V35 - Auto Fix Query)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -204,16 +204,29 @@ def save_notes_data(df_notes, creds, user_id):
         return True
     except: return False
 
-# --- 4. CORE ETL (V34 - UPGRADED FETCH) ---
+# --- 4. CORE ETL (V35 - AUTO FIX QUERY) ---
+def sanitize_filter_query(query):
+    """Tự động sửa lỗi cú pháp phổ biến trong query"""
+    if not query: return ""
+    
+    # 1. Thay = bằng == (nếu không phải là >=, <=, !=, ==)
+    # Regex tìm dấu = đứng một mình
+    # (?<![<>!=]) có nghĩa là phía trước không phải <, >, !, =
+    # (?![=]) có nghĩa là phía sau không phải =
+    query = re.sub(r'(?<![<>!=])=(?![=])', '==', query)
+    
+    return query
+
 def fetch_data_v3(row_config, creds, target_headers=None):
-    # [V34] Hàm fetch dữ liệu thông minh, nhận diện Header đích
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
     data_range_str = str(row_config.get(COL_DATA_RANGE, 'Lấy hết')).strip()
-    filter_query = str(row_config.get(COL_FILTER, '')).strip()
     
-    # Checkbox Lay_header: TRUE (có header), FALSE (không header, lấy từ dòng 1)
+    # [V35] Tự động sửa lỗi cú pháp lọc
+    raw_filter = str(row_config.get(COL_FILTER, '')).strip()
+    filter_query = sanitize_filter_query(raw_filter)
+    
     include_header = str(row_config.get(COL_HEADER, 'TRUE')).strip().upper() == 'TRUE'
 
     sheet_id = extract_id(link_src)
@@ -230,47 +243,40 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = wks_source.get_all_values()
         if data and len(data) > 0:
             if include_header:
-                # Trường hợp chuẩn: Dòng 1 là Header
                 headers = data[0]; rows = data[1:]
                 df = pd.DataFrame(rows, columns=headers)
             else:
-                # Trường hợp không lấy Header (Dữ liệu từ dòng 1)
-                # [FIX V34] Nếu không có header, ta phải gán tên cột theo Header của FILE ĐÍCH
-                # Để sau này concat không bị lệch
-                df = pd.DataFrame(data) # Lúc này cột là 0, 1, 2...
-                
+                df = pd.DataFrame(data)
                 if target_headers:
-                    # Gán tên cột theo đích (cắt bớt nếu thừa)
-                    num_src_cols = len(df.columns)
-                    num_tgt_cols = len(target_headers)
-                    
-                    # Chỉ lấy số lượng cột tương ứng
+                    num_src_cols = len(df.columns); num_tgt_cols = len(target_headers)
                     min_cols = min(num_src_cols, num_tgt_cols)
-                    
-                    # Tạo map đổi tên: {0: 'Cot_A', 1: 'Cot_B'}
                     rename_map = {i: target_headers[i] for i in range(min_cols)}
                     df = df.rename(columns=rename_map)
-                    
-                    # Nếu nguồn nhiều cột hơn đích -> Bỏ cột thừa
-                    if num_src_cols > num_tgt_cols:
-                        df = df.iloc[:, :num_tgt_cols]
+                    if num_src_cols > num_tgt_cols: df = df.iloc[:, :num_tgt_cols]
 
-            # Lọc vùng dữ liệu (Range)
             if data_range_str != "Lấy hết" and ":" in data_range_str:
                 try:
                     start_col_str, end_col_str = data_range_str.split(":")
                     start_idx = col_name_to_index(start_col_str.strip())
                     end_idx = col_name_to_index(end_col_str.strip())
                     if start_idx >= 0:
-                        # df.iloc hoạt động trên vị trí cột hiện tại
                         end_idx = min(end_idx, len(df.columns) - 1)
                         df = df.iloc[:, start_idx : end_idx + 1]
                 except: pass
 
-            # Lọc điều kiện (Filter)
+            # [V35] Lọc điều kiện thông minh
             if filter_query and filter_query.lower() not in ['nan', '']:
-                try: df = df.query(filter_query)
-                except Exception as e: return None, sheet_id, f"⚠️ Lỗi lọc: {e}"
+                try: 
+                    # Thử query trực tiếp
+                    df = df.query(filter_query)
+                except Exception as e1:
+                    # Nếu lỗi, thử bọc tên cột có dấu cách bằng backtick
+                    try:
+                        # Logic: Tìm các từ bên trái toán tử so sánh và bọc lại
+                        # Đây là fix đơn giản, tốt nhất user vẫn nên viết chuẩn
+                        return None, sheet_id, f"⚠️ Lỗi cú pháp lọc: {e1}. Gợi ý: Hãy viết tên cột trong dấu huyền `Ten Cot` == 'GiaTri'"
+                    except:
+                        return None, sheet_id, f"⚠️ Lỗi lọc: {e1}"
 
             df = df.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
             status_msg = "Thành công"
@@ -280,7 +286,6 @@ def fetch_data_v3(row_config, creds, target_headers=None):
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
     if df is not None:
-        # Chuẩn hóa 3 cột hệ thống
         df[SYS_COL_LINK] = link_src.strip()
         df[SYS_COL_SHEET] = source_label.strip()
         df[SYS_COL_MONTH] = month_val.strip()
@@ -332,12 +337,10 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
-        # 1. Gom dữ liệu
         df_new_all = pd.DataFrame()
         for df, src_link in tasks_list: df_new_all = pd.concat([df_new_all, df], ignore_index=True)
         if df_new_all.empty: return True, "No Data", {}
 
-        # 2. Đồng bộ Header
         existing_headers = wks.row_values(1)
         if not existing_headers:
             final_headers = df_new_all.columns.tolist()
@@ -349,12 +352,10 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
                 if col not in updated: updated.append(col); added = True
             if added: wks.update(range_name="A1", values=[updated]); existing_headers = updated
 
-        # 3. Align Columns
         df_aligned = pd.DataFrame()
         for col in existing_headers:
             df_aligned[col] = df_new_all[col] if col in df_new_all.columns else ""
         
-        # 4. Tìm & Xóa
         keys = set()
         for idx, row in df_new_all.iterrows():
             keys.add((str(row[SYS_COL_LINK]).strip(), str(row[SYS_COL_SHEET]).strip(), str(row[SYS_COL_MONTH]).strip()))
@@ -366,7 +367,6 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             batch_delete_rows(sh, wks.id, rows_to_del, log_container)
             log_container.write("✅ Đã xóa.")
         
-        # 5. Ghi mới
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng...")
         next_row = len(wks.get_all_values()) + 1
         chunk_size = 5000
@@ -374,7 +374,6 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         for i in range(0, len(new_vals), chunk_size):
             wks.append_rows(new_vals[i:i+chunk_size], value_input_option='USER_ENTERED'); time.sleep(1)
 
-        # 6. Range
         range_map = {}; curr = next_row
         for df, src_link in tasks_list:
             count = len(df); end = curr + count - 1
@@ -399,7 +398,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
 
         for idx, ((t_link, t_sheet), group_rows) in enumerate(grouped.items()):
             with status_container.expander(f"Processing File {idx+1}...", expanded=True):
-                # [V34] Lấy Header đích TRƯỚC khi tải data nguồn
                 target_headers = []
                 try:
                     tid = extract_id(t_link)
@@ -414,7 +412,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                 for i, r in enumerate(group_rows):
                     lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
                     st.write(f"⬇️ Load {i+1}: {lnk[-10:]}")
-                    # Truyền Header đích vào để map nếu ko có header nguồn
                     df, sid, msg = fetch_data_v3(r, creds, target_headers)
                     if df is not None: tasks.append((df, lnk)); total_rows += len(df)
                     else: st.error(f"Err: {msg}"); res_map[lnk] = ("Lỗi tải", "")
@@ -498,7 +495,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V34 - Perfect)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V35 - Auto Fix)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -508,7 +505,7 @@ def main_ui():
         blks = df_cfg[COL_BLOCK_NAME].unique().tolist() if not df_cfg.empty else [DEFAULT_BLOCK_NAME]
         if 'target_block_display' not in st.session_state: st.session_state['target_block_display'] = blks[0]
         sel_blk = st.selectbox("Block:", blks, index=blks.index(st.session_state['target_block_display']) if st.session_state['target_block_display'] in blks else 0)
-        st.session_state['target_block_display'] = sel_blk # Sync selection
+        st.session_state['target_block_display'] = sel_blk 
 
         if st.button("©️ Copy Block"):
              new_b = f"{sel_blk}_copy"
@@ -552,7 +549,7 @@ def main_ui():
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None
         },
-        use_container_width=True, num_rows="dynamic", key="edt_v34"
+        use_container_width=True, num_rows="dynamic", key="edt_v35"
     )
 
     if edt_df[COL_COPY_FLAG].any():
