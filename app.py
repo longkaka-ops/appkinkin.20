@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG & CONSTANTS
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V46 - Header Logic)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V47 - Header Fix)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -36,7 +36,6 @@ SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
 # --- ĐỊNH NGHĨA CỘT ---
-# 1. Config Dữ Liệu
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
@@ -58,25 +57,16 @@ REQUIRED_COLS_CONFIG = [
     COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE
 ]
 
-# 2. Config Lịch Trình
 SCHED_COL_BLOCK = "Block_Name"
 SCHED_COL_TYPE = "Loai_Lich"
 SCHED_COL_VAL1 = "Thong_So_Chinh"
 SCHED_COL_VAL2 = "Thong_So_Phu"
-
 REQUIRED_COLS_SCHED = [SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_COL_VAL2]
 
-# 3. Note
-NOTE_COL_ID = "ID"
-NOTE_COL_BLOCK = "Tên Khối"
-NOTE_COL_CONTENT = "Nội dung Note"
+NOTE_COL_ID = "ID"; NOTE_COL_BLOCK = "Tên Khối"; NOTE_COL_CONTENT = "Nội dung Note"
 REQUIRED_COLS_NOTE = [NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT]
 
-# 4. Hệ Thống (Key)
-SYS_COL_LINK = "Link file nguồn"
-SYS_COL_SHEET = "Sheet nguồn"
-SYS_COL_MONTH = "Tháng"
-
+SYS_COL_LINK = "Link file nguồn"; SYS_COL_SHEET = "Sheet nguồn"; SYS_COL_MONTH = "Tháng"
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
@@ -296,8 +286,7 @@ def fetch_data_v3(row_config, creds, target_headers=None):
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
     filter_query = smart_filter_fix(raw_filter)
     
-    # [V46] Logic Header: Tích (TRUE) = Lấy kèm dòng tiêu đề (Dòng 1 + Data)
-    #                     Không Tích (FALSE) = Chỉ lấy Data (Từ dòng 2), ốp vào cột đích
+    # [V47] Logic Header: Tích (TRUE) = Lấy kèm dòng tiêu đề -> Ốp vào cột
     include_header = str(row_config.get(COL_HEADER, 'FALSE')).strip().upper() == 'TRUE'
 
     sheet_id = extract_id(link_src)
@@ -314,23 +303,22 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = wks_source.get_all_values()
         if data and len(data) > 0:
             if include_header:
-                # Tích TRUE -> Lấy cả header làm data -> Dataframe column sẽ là 0,1,2...
-                # Dòng 1 (Header gốc) sẽ trở thành dòng dữ liệu đầu tiên
+                # [V47 FIX] Lấy cả header, nhưng vẫn ép cột theo Target để không bị lệch
+                # Dòng 0 (Header gốc) sẽ là data dòng đầu tiên của DF
                 df = pd.DataFrame(data)
-                
-                # Nếu có Target Header, map tạm để lọc (nhưng vẫn giữ nguyên dòng 1 là data)
-                if target_headers:
-                    # Logic hơi phức tạp: Nếu lấy cả header thì coi như là nối thô
-                    # Không cần map cột vì ta muốn giữ nguyên cấu trúc
-                    pass
-            else:
-                # Tích FALSE (Mặc định) -> Dòng 1 là Header bỏ qua, lấy từ dòng 2
-                # Gán tên cột theo Target Header để khớp cột
-                df = pd.DataFrame(data[1:]) # Bỏ dòng 1
+                # Nếu có target_headers, ta rename các cột 0, 1, 2 thành tên cột chuẩn
                 if target_headers:
                     num_src = len(df.columns); num_tgt = len(target_headers)
                     min_cols = min(num_src, num_tgt)
-                    # Rename cột 0,1,2... thành tên cột đích
+                    rename_map = {i: target_headers[i] for i in range(min_cols)}
+                    df = df.rename(columns=rename_map)
+                    if num_src > num_tgt: df = df.iloc[:, :num_tgt]
+            else:
+                # Không lấy header (skip dòng 0)
+                df = pd.DataFrame(data[1:]) 
+                if target_headers:
+                    num_src = len(df.columns); num_tgt = len(target_headers)
+                    min_cols = min(num_src, num_tgt)
                     rename_map = {i: target_headers[i] for i in range(min_cols)}
                     df = df.rename(columns=rename_map)
                     if num_src > num_tgt: df = df.iloc[:, :num_tgt]
@@ -534,7 +522,7 @@ def load_full_config(_creds):
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
     df[COL_MODE] = df[COL_MODE].replace('', 'APPEND').fillna('APPEND')
-    df[COL_HEADER] = df[COL_HEADER].replace('', 'FALSE').fillna('FALSE') # V46 Default FALSE
+    df[COL_HEADER] = df[COL_HEADER].replace('', 'FALSE').fillna('FALSE')
     if 'STT' in df.columns: df = df.drop(columns=['STT'])
     return df
 
@@ -585,7 +573,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V46 - Header Logic)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V47 - Final)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -603,7 +591,7 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
-        # --- SCHEDULER SIDEBAR (V44 - Single Hour) ---
+        # --- SCHEDULER SIDEBAR ---
         with st.expander("⏰ Lịch chạy tự động", expanded=True):
             st.caption(f"Cài đặt cho: **{sel_blk}**")
             df_sched = load_scheduler_config(creds)
@@ -710,11 +698,11 @@ def main_ui():
             COL_SRC_LINK: st.column_config.LinkColumn("Src Link", width="medium"), 
             COL_TGT_LINK: st.column_config.LinkColumn("Tgt Link", width="medium"),
             COL_FILTER: st.column_config.TextColumn("Filter", width="medium"),
-            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), # Default False
+            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), # False = Skip Header
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v46"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v47"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -736,7 +724,12 @@ def main_ui():
                 l = str(r.get(COL_SRC_LINK,'')).strip()
                 if l in res: edt_df.at[i, COL_RESULT] = res[l][0]; edt_df.at[i, COL_LOG_ROW] = res[l][1]
             save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
-            st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False); time.sleep(1); st.rerun()
+            
+            # [V47] AUTO REFRESH LOGIC
+            st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False)
+            st.cache_data.clear() # Clear cache to fetch new logs
+            time.sleep(1)
+            st.rerun()
     
     with c3:
         if st.button("🔍 Quét Quyền"):
