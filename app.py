@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG & CONSTANTS
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V43 - Final Stable)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V43 - Final UI)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -35,7 +35,7 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
-# --- ĐỊNH NGHĨA CỘT (Để tự động sửa lỗi KeyError) ---
+# --- ĐỊNH NGHĨA CỘT ---
 # 1. Config Dữ Liệu
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
@@ -81,7 +81,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # ==========================================
-# 2. AUTHENTICATION & UTILS (Top Priority)
+# 2. AUTHENTICATION & UTILS
 # ==========================================
 def get_creds():
     raw_creds = st.secrets["gcp_service_account"]
@@ -118,9 +118,7 @@ def extract_id(url):
 def smart_filter_fix(query_str):
     if not query_str: return ""
     q = query_str.strip()
-    # Fix 1: = -> ==
     q = re.sub(r'(?<![<>!=])=(?![=])', '==', q)
-    # Fix 2: Auto backticks for column names with spaces
     operators = ["==", "!=", ">=", "<=", ">", "<"]
     selected_op = None
     for op in operators:
@@ -134,15 +132,9 @@ def smart_filter_fix(query_str):
     return q
 
 def ensure_sheet_headers(wks, required_columns):
-    """Tự động sửa lỗi thiếu Header gây KeyError"""
     try:
         current_headers = wks.row_values(1)
-        if not current_headers:
-            wks.append_row(required_columns)
-        elif len(current_headers) < len(required_columns) or current_headers[0] != required_columns[0]:
-            # Đơn giản nhất: Nếu header sai lệch quá nhiều thì append vào (hoặc xử lý tùy ý).
-            # Ở đây ta giả định nếu rỗng thì điền.
-            pass
+        if not current_headers: wks.append_row(required_columns)
     except: pass
 
 # --- LOGGING SYSTEM ---
@@ -199,7 +191,7 @@ def check_login():
     return False
 
 # ==========================================
-# 3. SYSTEM MANAGERS (LOCK, NOTE, SCHED)
+# 3. SYSTEM MANAGERS
 # ==========================================
 def get_system_lock_status(creds):
     try:
@@ -281,7 +273,6 @@ def load_scheduler_config(creds):
             wks.append_row(REQUIRED_COLS_SCHED)
         ensure_sheet_headers(wks, REQUIRED_COLS_SCHED)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
-        # Check integrity
         if SCHED_COL_BLOCK not in df.columns: return pd.DataFrame(columns=REQUIRED_COLS_SCHED)
         return df.dropna(how='all')
     except: return pd.DataFrame(columns=REQUIRED_COLS_SCHED)
@@ -582,7 +573,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V43 - Final Stable)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V43 - Final UI)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -600,7 +591,7 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
-        # --- SCHEDULER SIDEBAR (V43 - Smart UI) ---
+        # --- SCHEDULER SIDEBAR (V43 - Multiselect UI) ---
         with st.expander("⏰ Lịch chạy tự động", expanded=True):
             st.caption(f"Cài đặt cho: **{sel_blk}**")
             df_sched = load_scheduler_config(creds)
@@ -633,7 +624,7 @@ def main_ui():
 
             elif new_type == "Hàng ngày":
                 old_hours = [x.strip() for x in d_val1.split(",")] if d_val1 else []
-                hours_opts = [f"{i:02d}:00" for i in range(24)] # 00:00, 01:00...
+                hours_opts = [f"{i:02d}:00" for i in range(24)]
                 sel_hours = st.multiselect("Chọn giờ chạy (0-23h):", hours_opts, default=[h for h in old_hours if h in hours_opts])
                 n_val1 = ",".join(sel_hours)
                 n_val2 = ""
