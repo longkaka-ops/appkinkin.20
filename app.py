@@ -15,7 +15,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V32 - Fix Delete)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Kinkin Manager (V33 - Stable Fix)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -254,7 +254,7 @@ def fetch_data_v2(row_config, creds):
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
     if df is not None:
-        # [V32] Chuẩn hóa dữ liệu ngay từ đầu để khớp 100%
+        # [V32] Chuẩn hóa dữ liệu ngay từ đầu
         df[SYS_COL_LINK] = link_src.strip()
         df[SYS_COL_SHEET] = source_label.strip()
         df[SYS_COL_MONTH] = month_val.strip()
@@ -268,7 +268,6 @@ def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
     
     headers = all_values[0]
     
-    # Tìm index chính xác của 3 cột hệ thống
     try:
         idx_link = headers.index(SYS_COL_LINK)
         idx_sheet = headers.index(SYS_COL_SHEET)
@@ -278,14 +277,10 @@ def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
         return [] 
         
     rows_to_delete = []
-    # Duyệt qua từng dòng
-    for i, row in enumerate(all_values[1:], start=2): # Data bắt đầu từ dòng 2
-        # Lấy giá trị và STRIP() để đảm bảo khớp
+    for i, row in enumerate(all_values[1:], start=2): 
         l = row[idx_link].strip() if len(row) > idx_link else ""
         s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
         m = row[idx_month].strip() if len(row) > idx_month else ""
-        
-        # So sánh Tuple
         current_key = (l, s, m)
         if current_key in keys_to_delete:
             rows_to_delete.append(i)
@@ -294,7 +289,7 @@ def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
 
 def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
     if not row_indices: return
-    row_indices.sort(reverse=True) # Xóa từ dưới lên
+    row_indices.sort(reverse=True) 
     ranges = []
     if len(row_indices) > 0:
         start = row_indices[0]; end = start
@@ -317,7 +312,7 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         time.sleep(1)
 
 def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V32] EXACT MATCH & CLEAN DELETE
+    # [V32] EXACT MATCH & CLEAN DELETE & FORCE HEADER
     try:
         target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi", {}
@@ -337,7 +332,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             
         if df_new_all.empty: return True, "Không có data mới", {}
 
-        # 2. Đồng bộ Header (Nếu thiếu cột hệ thống thì thêm)
+        # 2. Đồng bộ Header
         existing_headers = wks.row_values(1)
         
         if not existing_headers:
@@ -359,7 +354,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
                 existing_headers = updated_headers
                 log_container.write("➕ Đã bổ sung 3 cột hệ thống.")
 
-        # 3. Đồng bộ Dữ liệu vào Cột (Mapping)
+        # 3. Đồng bộ Cột (Strict Mapping)
         df_aligned = pd.DataFrame()
         for col in existing_headers:
             if col in df_new_all.columns:
@@ -367,7 +362,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             else:
                 df_aligned[col] = "" 
         
-        # 4. TẠO KEYS ĐỂ XÓA (STRIP SẠCH SẼ)
+        # 4. TẠO KEYS ĐỂ XÓA
         keys_to_delete = set()
         for idx, row in df_new_all.iterrows():
             l = str(row[SYS_COL_LINK]).strip()
@@ -375,26 +370,23 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             m = str(row[SYS_COL_MONTH]).strip()
             keys_to_delete.add((l, s, m))
             
-        # Log 1 key mẫu để debug
-        if keys_to_delete:
-            sample_key = list(keys_to_delete)[0]
-            log_container.write(f"🔑 Key mẫu cần xóa: {sample_key}")
-        
         # 5. Tìm & Xóa
         log_container.write("🔍 Đang quét file đích để tìm dòng cũ...")
         rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
         
         if rows_to_del:
-            log_container.write(f"🛑 Phát hiện {len(rows_to_del)} dòng cũ trùng khớp. Tiến hành xóa...")
+            log_container.write(f"✂️ Phát hiện {len(rows_to_del)} dòng cũ trùng khớp. Tiến hành xóa...")
             batch_delete_rows(sh, wks.id, rows_to_del, log_container)
             log_container.write("✅ Đã xóa xong dữ liệu cũ.")
         else:
-            log_container.write("ℹ️ Không tìm thấy dòng cũ nào để xóa (Hoặc đây là lần chạy đầu tiên).")
+            log_container.write("ℹ️ Không tìm thấy dòng cũ nào để xóa.")
             
         # 6. Ghi dữ liệu mới (Append)
         log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng mới...")
         
         all_vals = wks.get_all_values()
+        # Nếu sheet rỗng (chỉ có header) thì next_row = 2.
+        # Nếu sheet có data thì next_row = len + 1
         next_row = len(all_vals) + 1
         
         chunk_size = 5000
@@ -469,7 +461,6 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
 
                 if tasks_list:
                     st.info("⚡ Đang đồng bộ và ghi...")
-                    # [V32] Dùng hàm Strict Sync mới
                     success_update, msg_update, range_map = write_strict_sync(tasks_list, target_link, target_sheet, creds, st)
                     
                     if not success_update: st.error(f"❌ {msg_update}"); all_success = False
@@ -566,7 +557,7 @@ def main_ui():
     if not check_login(): return
     user_id = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("⚡ Kinkin (V32 - Fix Delete)"); st.caption(f"User: {user_id}")
+    with c1: st.title("⚡ Kinkin (V33 - Final Fix)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"): st.code(BOT_EMAIL_DISPLAY); st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "Copy Email")
 
@@ -610,6 +601,7 @@ def main_ui():
     if COL_COPY_FLAG not in current_block_df.columns: current_block_df.insert(0, COL_COPY_FLAG, False)
     if 'STT' not in current_block_df.columns: current_block_df.insert(1, 'STT', range(1, len(current_block_df)+1))
     
+    # [FIX] Xóa COL_NOTE khỏi column_config
     edited_df = st.data_editor(
         current_block_df,
         column_order=[COL_COPY_FLAG, "STT", COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_SRC_SHEET, COL_TGT_LINK, COL_TGT_SHEET, COL_FILTER, COL_HEADER, COL_RESULT, COL_LOG_ROW],
@@ -625,9 +617,9 @@ def main_ui():
             COL_HEADER: st.column_config.CheckboxColumn("Lay_header", default=True),
             COL_RESULT: st.column_config.TextColumn("Kết quả", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Dòng dữ liệu", disabled=True),
-            COL_BLOCK_NAME: None, COL_MODE: None, COL_NOTE: None
+            COL_BLOCK_NAME: None, COL_MODE: None 
         },
-        use_container_width=True, num_rows="dynamic", key="editor_v32"
+        use_container_width=True, num_rows="dynamic", key="editor_v33"
     )
 
     if edited_df[COL_COPY_FLAG].any():
