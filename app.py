@@ -15,7 +15,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V31 - Strict Sync)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Kinkin Manager (V32 - Fix Delete)", layout="wide", page_icon="⚡")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -254,43 +254,47 @@ def fetch_data_v2(row_config, creds):
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
     if df is not None:
-        df[SYS_COL_LINK] = link_src
-        df[SYS_COL_SHEET] = source_label
-        df[SYS_COL_MONTH] = month_val
+        # [V32] Chuẩn hóa dữ liệu ngay từ đầu để khớp 100%
+        df[SYS_COL_LINK] = link_src.strip()
+        df[SYS_COL_SHEET] = source_label.strip()
+        df[SYS_COL_MONTH] = month_val.strip()
         return df, sheet_id, status_msg
     return None, sheet_id, "Không lấy được dữ liệu"
 
 def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
-    """Tìm dòng xóa dựa trên tên cột thực tế trong sheet"""
+    """Tìm dòng xóa dựa trên tên cột thực tế trong sheet - EXACT MATCH"""
     all_values = wks.get_all_values()
     if not all_values: return []
     
     headers = all_values[0]
     
-    # [FIX] Tìm index chính xác của 3 cột hệ thống
+    # Tìm index chính xác của 3 cột hệ thống
     try:
         idx_link = headers.index(SYS_COL_LINK)
         idx_sheet = headers.index(SYS_COL_SHEET)
         idx_month = headers.index(SYS_COL_MONTH)
     except ValueError as e:
-        # Nếu không tìm thấy cột, nghĩa là sheet chưa chuẩn -> Không xóa được gì (hoặc xóa hết nếu muốn, nhưng an toàn là return [])
-        if log_container: log_container.warning(f"⚠️ Cảnh báo: Sheet đích chưa có đủ 3 cột hệ thống '{SYS_COL_LINK}', '{SYS_COL_SHEET}', '{SYS_COL_MONTH}'. Hệ thống sẽ tự động thêm vào khi ghi.")
+        if log_container: log_container.warning(f"⚠️ Không tìm thấy đủ 3 cột hệ thống trong Header. Không thể xóa dữ liệu cũ.")
         return [] 
         
     rows_to_delete = []
-    # Duyệt qua từng dòng để tìm key khớp
+    # Duyệt qua từng dòng
     for i, row in enumerate(all_values[1:], start=2): # Data bắt đầu từ dòng 2
-        # Đảm bảo row đủ dài
-        l = row[idx_link] if len(row) > idx_link else ""
-        s = row[idx_sheet] if len(row) > idx_sheet else ""
-        m = row[idx_month] if len(row) > idx_month else ""
-        if (l, s, m) in keys_to_delete:
+        # Lấy giá trị và STRIP() để đảm bảo khớp
+        l = row[idx_link].strip() if len(row) > idx_link else ""
+        s = row[idx_sheet].strip() if len(row) > idx_sheet else ""
+        m = row[idx_month].strip() if len(row) > idx_month else ""
+        
+        # So sánh Tuple
+        current_key = (l, s, m)
+        if current_key in keys_to_delete:
             rows_to_delete.append(i)
+            
     return rows_to_delete
 
 def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
     if not row_indices: return
-    row_indices.sort(reverse=True)
+    row_indices.sort(reverse=True) # Xóa từ dưới lên
     ranges = []
     if len(row_indices) > 0:
         start = row_indices[0]; end = start
@@ -308,12 +312,12 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
     batch_size = 100
     total_reqs = len(requests)
     for i in range(0, total_reqs, batch_size):
-        if log_container: log_container.write(f"✂️ Đang xóa batch {i//batch_size + 1}/{total_reqs//batch_size + 1}...")
+        if log_container: log_container.write(f"✂️ Đang xóa batch {i//batch_size + 1}...")
         sh.batch_update({'requests': requests[i:i+batch_size]})
         time.sleep(1)
 
 def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V31] STRICT COLUMN MAPPING & CLEAN DELETE
+    # [V32] EXACT MATCH & CLEAN DELETE
     try:
         target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi", {}
@@ -333,18 +337,15 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             
         if df_new_all.empty: return True, "Không có data mới", {}
 
-        # 2. [QUAN TRỌNG] ĐỒNG BỘ HEADER VÀ CỘT
-        # Lấy Header hiện tại của Sheet
+        # 2. Đồng bộ Header (Nếu thiếu cột hệ thống thì thêm)
         existing_headers = wks.row_values(1)
         
         if not existing_headers:
-            # Sheet trắng -> Dùng Header của DF làm chuẩn
             final_headers = df_new_all.columns.tolist()
             wks.update(range_name="A1", values=[final_headers])
             existing_headers = final_headers
-            log_container.write("🆕 Khởi tạo Header mới cho Sheet trắng.")
+            log_container.write("🆕 Khởi tạo Header.")
         else:
-            # Sheet đã có Header -> Kiểm tra xem có 3 cột hệ thống chưa
             updated_headers = existing_headers.copy()
             needed_cols = [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH]
             added = False
@@ -354,39 +355,47 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
                     added = True
             
             if added:
-                # Nếu thiếu cột hệ thống thì thêm vào cuối Header trên Sheet
                 wks.update(range_name="A1", values=[updated_headers])
                 existing_headers = updated_headers
-                log_container.write("➕ Đã bổ sung 3 cột hệ thống vào Header.")
+                log_container.write("➕ Đã bổ sung 3 cột hệ thống.")
 
-        # 3. ÉP DỮ LIỆU VÀO ĐÚNG CỘT (STRICT MAPPING)
-        # Chỉ lấy những cột có trong Header của Sheet.
-        # Nếu DF có cột thừa -> Bỏ. Nếu DF thiếu cột -> Điền rỗng.
-        # Điều này ngăn chặn việc tự sinh cột mới lệch lạc.
-        
+        # 3. Đồng bộ Dữ liệu vào Cột (Mapping)
         df_aligned = pd.DataFrame()
         for col in existing_headers:
             if col in df_new_all.columns:
                 df_aligned[col] = df_new_all[col]
             else:
-                df_aligned[col] = "" # Thiếu thì điền rỗng
+                df_aligned[col] = "" 
         
-        # 4. TÌM VÀ XÓA DỮ LIỆU CŨ (Dựa trên Header chuẩn vừa đồng bộ)
-        keys_to_delete = set(zip(df_new_all[SYS_COL_LINK], df_new_all[SYS_COL_SHEET], df_new_all[SYS_COL_MONTH]))
+        # 4. TẠO KEYS ĐỂ XÓA (STRIP SẠCH SẼ)
+        keys_to_delete = set()
+        for idx, row in df_new_all.iterrows():
+            l = str(row[SYS_COL_LINK]).strip()
+            s = str(row[SYS_COL_SHEET]).strip()
+            m = str(row[SYS_COL_MONTH]).strip()
+            keys_to_delete.add((l, s, m))
+            
+        # Log 1 key mẫu để debug
+        if keys_to_delete:
+            sample_key = list(keys_to_delete)[0]
+            log_container.write(f"🔑 Key mẫu cần xóa: {sample_key}")
         
-        log_container.write("🔍 Đang tìm dữ liệu cũ để xóa...")
-        # Lúc này Header trên Sheet đã chuẩn (có 3 cột hệ thống), hàm get_rows sẽ chạy đúng.
+        # 5. Tìm & Xóa
+        log_container.write("🔍 Đang quét file đích để tìm dòng cũ...")
         rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
         
         if rows_to_del:
-            log_container.write(f"✂️ Phát hiện {len(rows_to_del)} dòng cũ. Đang xóa...")
+            log_container.write(f"🛑 Phát hiện {len(rows_to_del)} dòng cũ trùng khớp. Tiến hành xóa...")
             batch_delete_rows(sh, wks.id, rows_to_del, log_container)
+            log_container.write("✅ Đã xóa xong dữ liệu cũ.")
+        else:
+            log_container.write("ℹ️ Không tìm thấy dòng cũ nào để xóa (Hoặc đây là lần chạy đầu tiên).")
             
-        # 5. GHI DỮ LIỆU MỚI (APPEND)
-        # Dùng append_rows để đảm bảo ghi xuống dưới cùng
-        # convert df_aligned (đã đúng thứ tự cột) sang list
-        
+        # 6. Ghi dữ liệu mới (Append)
         log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng mới...")
+        
+        all_vals = wks.get_all_values()
+        next_row = len(all_vals) + 1
         
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
@@ -396,28 +405,16 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             wks.append_rows(chunk, value_input_option='USER_ENTERED')
             time.sleep(1)
 
-        # 6. Tính Range
-        # Lấy lại tất cả để tính range chính xác cho config (Hơi chậm xíu nhưng an toàn)
-        # Hoặc tính toán logic:
-        # Nếu xóa xong, số dòng hiện tại là X. Ta append Y dòng.
-        # Range mới là X+1 -> X+Y.
-        
-        # Tuy nhiên do append_rows có thể ghi vào các dòng trống ở giữa nếu có (ít khả năng nếu deleteDimension).
-        # Để đơn giản và nhanh, ta ước lượng.
-        
-        # Để chính xác:
-        current_data_len = len(wks.get_all_values()) # Đếm lại tổng sau khi ghi
-        start_pointer = current_data_len - len(df_aligned) + 1
-        
+        # 7. Range Map
         range_map = {}
-        current_pointer = start_pointer
+        current_pointer = next_row
         for df, src_link in tasks_list:
             count = len(df)
             end_pointer = current_pointer + count - 1
             range_map[(src_link, df[SYS_COL_SHEET].iloc[0])] = f"{current_pointer} - {end_pointer}"
             current_pointer += count
 
-        return True, f"Đã cập nhật chuẩn ({len(df_aligned)} dòng)", range_map
+        return True, f"Đã cập nhật ({len(df_aligned)} dòng)", range_map
 
     except Exception as e: 
         return False, f"Lỗi Ghi: {str(e)}", {}
@@ -472,6 +469,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
 
                 if tasks_list:
                     st.info("⚡ Đang đồng bộ và ghi...")
+                    # [V32] Dùng hàm Strict Sync mới
                     success_update, msg_update, range_map = write_strict_sync(tasks_list, target_link, target_sheet, creds, st)
                     
                     if not success_update: st.error(f"❌ {msg_update}"); all_success = False
@@ -568,7 +566,7 @@ def main_ui():
     if not check_login(): return
     user_id = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("⚡ Kinkin (V31 - Strict Sync)"); st.caption(f"User: {user_id}")
+    with c1: st.title("⚡ Kinkin (V32 - Fix Delete)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"): st.code(BOT_EMAIL_DISPLAY); st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "Copy Email")
 
@@ -629,7 +627,7 @@ def main_ui():
             COL_LOG_ROW: st.column_config.TextColumn("Dòng dữ liệu", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None, COL_NOTE: None
         },
-        use_container_width=True, num_rows="dynamic", key="editor_v31"
+        use_container_width=True, num_rows="dynamic", key="editor_v32"
     )
 
     if edited_df[COL_COPY_FLAG].any():
