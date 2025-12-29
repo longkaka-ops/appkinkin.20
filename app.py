@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG & CONSTANTS
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V43 - Final UI)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V44 - Single Hour)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -582,7 +582,7 @@ def main_ui():
         df_cfg = st.session_state['df_full_config']
         blks = df_cfg[COL_BLOCK_NAME].unique().tolist() if not df_cfg.empty else [DEFAULT_BLOCK_NAME]
         if 'target_block_display' not in st.session_state: st.session_state['target_block_display'] = blks[0]
-        sel_blk = st.selectbox("Block:", blks, index=blks.index(st.session_state['target_block_display']) if st.session_state['target_block_display'] in blks else 0)
+        sel_blk = st.selectbox("Chọn Khối:", blks, index=blks.index(st.session_state['target_block_display']) if st.session_state['target_block_display'] in blks else 0)
         st.session_state['target_block_display'] = sel_blk 
 
         if st.button("©️ Copy Block"):
@@ -591,7 +591,7 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
-        # --- SCHEDULER SIDEBAR (V43 - Multiselect UI) ---
+        # --- SCHEDULER SIDEBAR (V44 - Single Hour) ---
         with st.expander("⏰ Lịch chạy tự động", expanded=True):
             st.caption(f"Cài đặt cho: **{sel_blk}**")
             df_sched = load_scheduler_config(creds)
@@ -623,36 +623,33 @@ def main_ui():
                 n_val2 = "" 
 
             elif new_type == "Hàng ngày":
-                old_hours = [x.strip() for x in d_val1.split(",")] if d_val1 else []
+                # Single hour selection
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
-                sel_hours = st.multiselect("Chọn giờ chạy (0-23h):", hours_opts, default=[h for h in old_hours if h in hours_opts])
-                n_val1 = ",".join(sel_hours)
+                # Find index of previous selection
+                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8 # Default 08:00
+                n_val1 = st.selectbox("Chọn giờ chạy (0-23h):", hours_opts, index=h_idx)
                 n_val2 = ""
 
             elif new_type == "Hàng tuần":
-                old_hours = [x.strip() for x in d_val1.split(",")] if d_val1 else []
                 old_days = [x.strip() for x in d_val2.split(",")] if d_val2 else []
-                
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
                 days_opts = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
                 
                 sel_days = st.multiselect("Chọn Thứ:", days_opts, default=[d for d in old_days if d in days_opts])
-                sel_hours = st.multiselect("Chọn Giờ:", hours_opts, default=[h for h in old_hours if h in hours_opts])
                 
-                n_val1 = ",".join(sel_hours)
+                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8
+                n_val1 = st.selectbox("Chọn Giờ:", hours_opts, index=h_idx)
                 n_val2 = ",".join(sel_days)
 
             elif new_type == "Hàng tháng":
-                old_hours = [x.strip() for x in d_val1.split(",")] if d_val1 else []
                 old_dates = [x.strip() for x in d_val2.split(",")] if d_val2 else []
-                
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
                 dates_opts = [str(i) for i in range(1, 32)]
                 
                 sel_dates = st.multiselect("Chọn Ngày (1-31):", dates_opts, default=[d for d in old_dates if d in dates_opts])
-                sel_hours = st.multiselect("Chọn Giờ:", hours_opts, default=[h for h in old_hours if h in hours_opts])
                 
-                n_val1 = ",".join(sel_hours)
+                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8
+                n_val1 = st.selectbox("Chọn Giờ:", hours_opts, index=h_idx)
                 n_val2 = ",".join(sel_dates)
 
             if st.button("💾 Lưu Lịch"):
