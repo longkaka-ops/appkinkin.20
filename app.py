@@ -15,7 +15,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V35 - Auto Fix Query)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V36 - Auto Query Fix)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -63,7 +63,7 @@ SYS_COL_MONTH = "Tháng"
 DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# --- 2. HÀM HỖ TRỢ ---
+# --- 2. HÀM HỖ TRỢ (UTILS) ---
 def col_name_to_index(col_name):
     col_name = col_name.upper()
     index = 0
@@ -97,7 +97,38 @@ def get_sh_with_retry(creds, sheet_id_or_key):
             time.sleep((2 ** i) + 0.5) 
     return None
 
-# --- LOG HÀNH VI ---
+def smart_filter_fix(query_str):
+    """Tự động sửa lỗi cú pháp lọc: thêm dấu huyền, sửa dấu bằng"""
+    if not query_str: return ""
+    q = query_str.strip()
+    
+    # 1. Sửa dấu bằng đơn (=) thành (==) nếu không phải là >=, <=, !=
+    # Regex lookbehind/lookahead để tránh thay thế nhầm
+    q = re.sub(r'(?<![<>!=])=(?![=])', '==', q)
+    
+    # 2. Tự động bọc tên cột có dấu cách bằng dấu huyền (`)
+    # Tìm toán tử so sánh
+    operators = ["==", "!=", ">=", "<=", ">", "<"]
+    selected_op = None
+    for op in operators:
+        if op in q:
+            selected_op = op
+            break
+            
+    if selected_op:
+        parts = q.split(selected_op, 1)
+        left = parts[0].strip()
+        right = parts[1].strip()
+        
+        # Nếu vế trái (tên cột) có dấu cách và chưa được bọc
+        if " " in left and not left.startswith("`") and not left.startswith("'") and not left.startswith('"'):
+            left = f"`{left}`"
+            
+        return f"{left} {selected_op} {right}"
+    
+    return q
+
+# --- 3. HỆ THỐNG LOGGING (ĐƯA LÊN TRƯỚC PIPELINE) ---
 def log_user_action(creds, user_id, action, status=""):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -120,10 +151,16 @@ def fetch_activity_logs(creds, limit=50):
         return df.tail(limit).iloc[::-1]
     except: return pd.DataFrame()
 
-# --- SOI CHI TIẾT THAY ĐỔI ---
-def detect_changes_detailed(df_old, df_new):
-    if len(df_old) > 1000 or len(df_new) > 1000: return f"Thay đổi lớn ({len(df_new)} dòng)"
-    return "Cập nhật cấu hình"
+def write_detailed_log(creds, log_data_list):
+    if not log_data_list: return
+    try:
+        sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
+        try: wks = sh.worksheet(SHEET_LOG_NAME)
+        except: 
+            wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=15)
+            wks.append_row(["Thời gian", "Vùng lấy", "Tháng", "User", "Link Nguồn", "Link Đích", "Sheet Đích", "Sheet Nguồn", "Kết Quả", "Số Dòng", "Range", "Block"])
+        wks.append_rows(log_data_list)
+    except: pass
 
 # --- 4. HỆ THỐNG LOCK ---
 def get_system_lock_status(creds):
@@ -164,7 +201,7 @@ def release_lock(creds, user_id):
         if val == user_id: wks.update("A2:C2", [["FALSE", "", ""]])
     except: pass
 
-# --- LOGIN & NOTE ---
+# --- 5. LOGIN & NOTE ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
@@ -204,28 +241,16 @@ def save_notes_data(df_notes, creds, user_id):
         return True
     except: return False
 
-# --- 4. CORE ETL (V35 - AUTO FIX QUERY) ---
-def sanitize_filter_query(query):
-    """Tự động sửa lỗi cú pháp phổ biến trong query"""
-    if not query: return ""
-    
-    # 1. Thay = bằng == (nếu không phải là >=, <=, !=, ==)
-    # Regex tìm dấu = đứng một mình
-    # (?<![<>!=]) có nghĩa là phía trước không phải <, >, !, =
-    # (?![=]) có nghĩa là phía sau không phải =
-    query = re.sub(r'(?<![<>!=])=(?![=])', '==', query)
-    
-    return query
-
+# --- 6. CORE ETL (V36 - AUTO FIX QUERY) ---
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
     source_label = str(row_config.get(COL_SRC_SHEET, '')).strip()
     month_val = str(row_config.get(COL_MONTH, ''))
     data_range_str = str(row_config.get(COL_DATA_RANGE, 'Lấy hết')).strip()
     
-    # [V35] Tự động sửa lỗi cú pháp lọc
+    # [V36] Tự động sửa lỗi cú pháp lọc
     raw_filter = str(row_config.get(COL_FILTER, '')).strip()
-    filter_query = sanitize_filter_query(raw_filter)
+    filter_query = smart_filter_fix(raw_filter) # Hàm sửa lỗi
     
     include_header = str(row_config.get(COL_HEADER, 'TRUE')).strip().upper() == 'TRUE'
 
@@ -264,19 +289,12 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                         df = df.iloc[:, start_idx : end_idx + 1]
                 except: pass
 
-            # [V35] Lọc điều kiện thông minh
+            # [V36] Lọc điều kiện thông minh
             if filter_query and filter_query.lower() not in ['nan', '']:
                 try: 
-                    # Thử query trực tiếp
                     df = df.query(filter_query)
                 except Exception as e1:
-                    # Nếu lỗi, thử bọc tên cột có dấu cách bằng backtick
-                    try:
-                        # Logic: Tìm các từ bên trái toán tử so sánh và bọc lại
-                        # Đây là fix đơn giản, tốt nhất user vẫn nên viết chuẩn
-                        return None, sheet_id, f"⚠️ Lỗi cú pháp lọc: {e1}. Gợi ý: Hãy viết tên cột trong dấu huyền `Ten Cot` == 'GiaTri'"
-                    except:
-                        return None, sheet_id, f"⚠️ Lỗi lọc: {e1}"
+                    return None, sheet_id, f"⚠️ Lỗi cú pháp lọc: {e1}. (Query gốc: {raw_filter} -> Fix: {filter_query})"
 
             df = df.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
             status_msg = "Thành công"
@@ -382,7 +400,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         return True, f"Cập nhật {len(df_aligned)} dòng", range_map
     except Exception as e: return False, f"Lỗi: {str(e)}", {}
 
-# --- PIPELINE ---
+# --- 7. PIPELINE ---
 def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_container):
     creds = get_creds()
     if not acquire_lock(creds, user_id): return False, f"Hệ thống bận", 0
@@ -435,7 +453,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
         return all_ok, res_map, total_rows
     finally: release_lock(creds, user_id)
 
-# --- CONFIG & UI ---
+# --- 8. CONFIG & UI ---
 @st.cache_data
 def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -495,7 +513,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V35 - Auto Fix)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V36 - Fix All)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -505,7 +523,7 @@ def main_ui():
         blks = df_cfg[COL_BLOCK_NAME].unique().tolist() if not df_cfg.empty else [DEFAULT_BLOCK_NAME]
         if 'target_block_display' not in st.session_state: st.session_state['target_block_display'] = blks[0]
         sel_blk = st.selectbox("Block:", blks, index=blks.index(st.session_state['target_block_display']) if st.session_state['target_block_display'] in blks else 0)
-        st.session_state['target_block_display'] = sel_blk 
+        st.session_state['target_block_display'] = sel_blk
 
         if st.button("©️ Copy Block"):
              new_b = f"{sel_blk}_copy"
@@ -547,9 +565,9 @@ def main_ui():
             COL_HEADER: st.column_config.CheckboxColumn("Header?", default=True),
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
-            COL_BLOCK_NAME: None, COL_MODE: None
+            COL_BLOCK_NAME: None, COL_MODE: None 
         },
-        use_container_width=True, num_rows="dynamic", key="edt_v35"
+        use_container_width=True, num_rows="dynamic", key="edt_v36"
     )
 
     if edt_df[COL_COPY_FLAG].any():
