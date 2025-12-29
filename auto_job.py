@@ -9,21 +9,19 @@ import uuid
 import numpy as np
 import gc
 from gspread_dataframe import get_as_dataframe, set_with_dataframe
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2 import service_account
 from collections import defaultdict
 
 # ==========================================
 # 1. CẤU HÌNH & CONSTANTS
 # ==========================================
-# Tên các Sheet trong file cấu hình
 SHEET_CONFIG_NAME = "luu_cau_hinh"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_LOG_NAME = "log_lanthucthi"
 SHEET_ACTIVITY_NAME = "log_hanh_vi"
 SHEET_LOCK_NAME = "sys_lock"
 
-# Định nghĩa cột
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
@@ -35,35 +33,33 @@ COL_TGT_SHEET = "Tên sheet dữ liệu đích"
 COL_FILTER = "Dieu_Kien_Loc"
 COL_HEADER = "Lay_Header"
 
-# Cột Scheduler
 SCHED_COL_BLOCK = "Block_Name"
 SCHED_COL_TYPE = "Loai_Lich"
-SCHED_COL_VAL1 = "Thong_So_Chinh" # Giờ hoặc Phút
-SCHED_COL_VAL2 = "Thong_So_Phu"   # Ngày hoặc Thứ
+SCHED_COL_VAL1 = "Thong_So_Chinh" 
+SCHED_COL_VAL2 = "Thong_So_Phu"   
 
-# Cột Log
 SYS_COL_LINK = "Link file nguồn"
 SYS_COL_SHEET = "Sheet nguồn"
 SYS_COL_MONTH = "Tháng"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
+# Khoảng thời gian nhìn lại (phút). 
+# Vì cron chạy 10p/lần, ta set 12p để trừ hao độ trễ của Github
+LOOKBACK_MINUTES = 12 
+
 # ==========================================
 # 2. CORE UTILS (SERVER SIDE)
 # ==========================================
 def get_creds():
-    """Lấy Credential từ biến môi trường (Ưu tiên) hoặc file"""
     try:
-        # Cách 1: GitHub Secrets / Environment Variable
         creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
         if creds_json:
             creds_info = json.loads(creds_json)
-            # Fix lỗi xuống dòng trong private key nếu có
             if "private_key" in creds_info:
                 creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
             return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
         
-        # Cách 2: File local (để test trên máy)
         if os.path.exists("secrets.json"):
             return service_account.Credentials.from_service_account_file("secrets.json", scopes=SCOPES)
             
@@ -74,16 +70,9 @@ def get_creds():
         return None
 
 def get_history_sheet_id():
-    """Lấy ID file Master Config"""
-    # 1. Từ Env Var
-    sid = os.environ.get("HISTORY_SHEET_ID")
-    if sid: return sid
-    # 2. Hardcode (Nếu bạn muốn điền cứng để test, nhưng nên dùng Env)
-    # return "YOUR_SHEET_ID_HERE"
-    return None
+    return os.environ.get("HISTORY_SHEET_ID")
 
 def safe_api_call(func, *args, **kwargs):
-    """Cơ chế chống lỗi 429 Quota Exceeded"""
     max_retries = 5
     for i in range(max_retries):
         try:
@@ -94,10 +83,8 @@ def safe_api_call(func, *args, **kwargs):
                 wait_time = (2 ** i) + 5
                 print(f"⚠️ Quota exceeded. Waiting {wait_time}s...")
                 time.sleep(wait_time)
-            elif i == max_retries - 1:
-                raise e
-            else:
-                time.sleep(2)
+            elif i == max_retries - 1: raise e
+            else: time.sleep(2)
     return None
 
 def get_sh_with_retry(creds, sheet_id):
@@ -181,7 +168,6 @@ def fetch_data(row_config, creds, target_headers=None):
         data = safe_api_call(wks_source.get_all_values)
         if not data: return pd.DataFrame(), "Sheet trắng"
 
-        # Logic Header Chuẩn (V68)
         header_row = data[0]
         body_rows = data[1:]
         
@@ -197,7 +183,6 @@ def fetch_data(row_config, creds, target_headers=None):
         
         df_working = pd.DataFrame(body_rows, columns=unique_headers)
 
-        # Mapping
         if target_headers:
             num_src = len(df_working.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
@@ -206,7 +191,6 @@ def fetch_data(row_config, creds, target_headers=None):
             df_working = df_working.rename(columns=rename_map)
             if num_src > num_tgt: df_working = df_working.iloc[:, :num_tgt]
 
-        # Range
         if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
                 s_str, e_str = data_range_str.split(":")
@@ -214,13 +198,11 @@ def fetch_data(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_working = df_working.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Filter
         if raw_filter:
             df_filtered, err = apply_smart_filter(df_working, raw_filter)
             if err: return None, f"Filter Error: {err}"
             df_working = df_filtered
 
-        # Include Header?
         if include_header:
             df_header_row = pd.DataFrame([df_working.columns.tolist()], columns=df_working.columns)
             df_final = pd.concat([df_header_row, df_working], ignore_index=True)
@@ -309,12 +291,10 @@ def write_data(tasks_list, target_link, target_sheet_name, creds):
         for idx, row in df_new_all.iterrows():
             keys.add((str(row[SYS_COL_LINK]).strip(), str(row[SYS_COL_SHEET]).strip(), str(row[SYS_COL_MONTH]).strip()))
         
-        # Delete Old
         rows_to_del = get_rows_to_delete_dynamic(wks, keys)
         if rows_to_del:
             batch_delete_rows(sh, wks.id, rows_to_del)
         
-        # Append New
         start_row = len(safe_api_call(wks.get_all_values)) + 1
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
@@ -335,56 +315,85 @@ def write_data(tasks_list, target_link, target_sheet_name, creds):
     except Exception as e: return False, f"Write Error: {str(e)}", {}
 
 # ==========================================
-# 4. SCHEDULER LOGIC
+# 4. SCHEDULER LOGIC (V71 - SMART CATCH-UP)
 # ==========================================
-def is_time_to_run(row, now_dt):
-    """Kiểm tra xem block này có đến giờ chạy không"""
+def is_time_match(sched_time_str, now_dt):
+    """
+    Kiểm tra xem sched_time_str (HH:MM) có nằm trong khoảng 
+    [now - LOOKBACK, now] không.
+    Ví dụ: Cài 08:05, giờ chạy 08:10 -> Có nằm trong khoảng -> True
+    """
+    try:
+        # 1. Parse giờ cài đặt
+        h_set, m_set = map(int, sched_time_str.split(":"))
+        
+        # 2. Tạo datetime object cho giờ cài đặt (trong ngày hôm nay)
+        sched_dt = now_dt.replace(hour=h_set, minute=m_set, second=0, microsecond=0)
+        
+        # 3. Tính khoảng cách
+        diff = (now_dt - sched_dt).total_seconds() / 60 # Số phút đã trôi qua
+        
+        # 4. Kiểm tra:
+        # - diff >= 0: Giờ cài đặt đã xảy ra (hoặc đang xảy ra)
+        # - diff <= LOOKBACK: Không quá cũ (trong vòng 12 phút)
+        if 0 <= diff <= LOOKBACK_MINUTES:
+            return True
+            
+        return False
+    except:
+        return False
+
+def is_time_to_run_smart(row, now_dt):
     sched_type = str(row.get(SCHED_COL_TYPE, "")).strip()
-    val1 = str(row.get(SCHED_COL_VAL1, "")).strip() # Giờ hoặc Phút
+    val1 = str(row.get(SCHED_COL_VAL1, "")).strip() # Giờ (08:00) hoặc Phút (30)
     val2 = str(row.get(SCHED_COL_VAL2, "")).strip() # Ngày hoặc Thứ
 
     if sched_type == "Không chạy": return False
 
-    current_hm = now_dt.strftime("%H:%M")
-    current_hour = now_dt.hour
-    current_minute = now_dt.minute
-    
     # Mapping Thứ
     week_map = {0: "T2", 1: "T3", 2: "T4", 3: "T5", 4: "T6", 5: "T7", 6: "CN"}
-    current_day_str = str(now_dt.day)
     current_wday_str = week_map[now_dt.weekday()]
+    current_day_str = str(now_dt.day)
 
     if sched_type == "Chạy theo phút":
-        # val1 là số phút (interval), ví dụ: 30
+        # Logic: Check xem có mốc chia hết cho interval trong khoảng lookback không
         try:
             interval = int(val1)
-            # Chạy nếu phút hiện tại chia hết cho interval (vd: 0, 30 với interval 30)
-            # Lưu ý: GitHub Actions cron thường chạy 5-10p/lần, nên logic này cần cron chạy dày.
-            # Để an toàn, nên check modulo
-            if interval > 0 and current_minute % interval == 0:
+            if interval <= 0: return False
+            
+            curr_total_min = now_dt.hour * 60 + now_dt.minute
+            prev_total_min = curr_total_min - LOOKBACK_MINUTES
+            
+            # Tính số lần interval đã xảy ra tính đến hiện tại
+            count_curr = curr_total_min // interval
+            # Tính số lần interval đã xảy ra tính đến lúc trước
+            count_prev = prev_total_min // interval
+            
+            # Nếu số lần thay đổi -> Có nghĩa là vừa bước qua 1 mốc interval
+            if count_curr > count_prev:
                 return True
         except: pass
 
     elif sched_type == "Hàng ngày":
-        # val1 là giờ (08:00)
-        return val1 == current_hm
+        return is_time_match(val1, now_dt)
 
     elif sched_type == "Hàng tuần":
-        # val1: Giờ (08:00), val2: Thứ (T2, T3)
+        # Check thứ trước
         target_days = [x.strip() for x in val2.split(",")]
-        return (val1 == current_hm) and (current_wday_str in target_days)
+        if current_wday_str in target_days:
+            return is_time_match(val1, now_dt)
 
     elif sched_type == "Hàng tháng":
-        # val1: Giờ (08:00), val2: Ngày (4,8)
+        # Check ngày trước
         target_dates = [x.strip() for x in val2.split(",")]
-        return (val1 == current_hm) and (current_day_str in target_dates)
+        if current_day_str in target_dates:
+            return is_time_match(val1, now_dt)
 
     return False
 
 def run_auto_job():
-    print("🚀 Starting Auto Job...")
+    print("🚀 Starting Auto Job (V71)...")
     
-    # 1. Setup
     creds = get_creds()
     if not creds: return
     
@@ -394,91 +403,79 @@ def run_auto_job():
 
     sh_master = get_sh_with_retry(creds, master_id)
     
-    # 2. Load Configs
     try:
         wks_sched = sh_master.worksheet(SHEET_SYS_CONFIG)
         df_sched = get_as_dataframe(wks_sched, evaluate_formulas=True, dtype=str)
         
         wks_config = sh_master.worksheet(SHEET_CONFIG_NAME)
         df_config = get_as_dataframe(wks_config, evaluate_formulas=True, dtype=str)
-        
-        # Add index for mapping
         df_config['index_map'] = df_config.index
     except Exception as e:
         print(f"❌ Lỗi đọc config: {e}"); return
 
-    # 3. Check Schedule
+    # Check Schedule
     tz = pytz.timezone('Asia/Ho_Chi_Minh')
     now = datetime.now(tz)
-    print(f"🕒 Current Time (VN): {now.strftime('%d/%m/%Y %H:%M')}")
+    print(f"🕒 Time Check: {now.strftime('%H:%M:%S')} (Lookback {LOOKBACK_MINUTES}m)")
 
     blocks_to_run = []
     if SCHED_COL_BLOCK in df_sched.columns:
         for _, row in df_sched.iterrows():
             blk = str(row.get(SCHED_COL_BLOCK, ""))
-            if is_time_to_run(row, now):
-                print(f"⚡ Triggering Block: {blk}")
+            if is_time_to_run_smart(row, now):
+                print(f"⚡ MATCH: {blk}")
                 blocks_to_run.append(blk)
     
     if not blocks_to_run:
-        print("💤 Không có lịch chạy vào giờ này.")
+        print("💤 Không có lịch phù hợp trong khoảng thời gian này.")
         return
 
-    # 4. Process Blocks
+    # Process Blocks
     log_buffer = []
     
-    # Group config by Block -> Then by Target Sheet
     for blk in blocks_to_run:
-        # Filter config rows for this block
         block_rows = df_config[
             (df_config[COL_BLOCK_NAME] == blk) & 
             (df_config[COL_STATUS] == "Chưa chốt & đang cập nhật")
         ]
         
         if block_rows.empty:
-            print(f"⚠️ Block {blk} không có dòng nào Active.")
+            print(f"⚠️ Block {blk} rỗng/inactive.")
             continue
 
-        # Group by Target Link & Sheet to optimize batch write
         grouped = defaultdict(list)
         for _, r in block_rows.iterrows():
             tgt_key = (str(r.get(COL_TGT_LINK, '')).strip(), str(r.get(COL_TGT_SHEET, '')).strip())
             grouped[tgt_key].append(r)
 
-        # Execute
         for (t_link, t_sheet), rows in grouped.items():
             tasks = []
-            print(f"📂 Processing {blk} -> ...{t_link[-10:]}/{t_sheet}")
+            print(f"📂 Run: {blk} -> {t_sheet}")
             
-            # 4.1 Fetch Data
-            # Get target header first? (Optional optimization, skip for now)
-            
+            # Fetch
             for r in rows:
                 lnk = r.get(COL_SRC_LINK, ''); lbl = r.get(COL_SRC_SHEET, '')
                 idx = r.get('index_map')
                 
-                print(f"  ⬇️ Fetching: {lbl}...")
+                # Header? logic cũng nằm trong fetch_data
                 df, msg = fetch_data(r, creds)
-                time.sleep(1.5) # Anti Quota
+                time.sleep(1.5)
                 
                 if df is not None:
                     tasks.append((df, lnk, idx))
                 else:
-                    # Log Failure
                     log_buffer.append([
                         now.strftime("%d/%m/%Y %H:%M:%S"), r.get(COL_DATA_RANGE), r.get(COL_MONTH), 
                         "AUTO_BOT", lnk, t_link, t_sheet, lbl, "Lỗi tải", "0", "", blk
                     ])
 
-            # 4.2 Write Batch
+            # Write
             if tasks:
                 ok, msg, res_map = write_data(tasks, t_link, t_sheet, creds)
-                print(f"  💾 Write Status: {msg}")
+                print(f"  💾 {msg}")
                 
-                # Log Success
                 for df, lnk, idx in tasks:
                     status, ranges, count = res_map.get(idx, ("Lỗi Ghi", "", 0))
-                    # Find original row to get metadata
                     orig_r = df_config.loc[idx]
                     
                     log_buffer.append([
@@ -487,27 +484,26 @@ def run_auto_job():
                         status, str(count), ranges, blk
                     ])
 
-    # 5. Flush Logs
+    # Flush Logs
     if log_buffer:
-        print(f"📝 Writing {len(log_buffer)} log entries...")
+        print(f"📝 Saving {len(log_buffer)} logs...")
         try:
             wks_log = sh_master.worksheet(SHEET_LOG_NAME)
             cleaned_logs = [[str(x) for x in row] for row in log_buffer]
             safe_api_call(wks_log.append_rows, cleaned_logs)
-            print("✅ Log saved.")
         except Exception as e:
-            print(f"❌ Failed to save logs: {e}")
+            print(f"❌ Log Error: {e}")
 
-    # 6. Log Activity (Optional: Log that Bot ran)
+    # Activity Log
     try:
         wks_act = sh_master.worksheet(SHEET_ACTIVITY_NAME)
         safe_api_call(wks_act.append_row, [
             now.strftime("%d/%m/%Y %H:%M:%S"), "AUTO_BOT", 
-            "Scheduled Run", f"Ran blocks: {', '.join(blocks_to_run)}"
+            "Scheduled Run", f"Blocks: {', '.join(blocks_to_run)}"
         ])
     except: pass
 
-    print("🏁 Job Finished.")
+    print("🏁 Done.")
 
 if __name__ == "__main__":
     run_auto_job()
