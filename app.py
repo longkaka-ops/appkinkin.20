@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V68 - Final Log Fix)", layout="wide", page_icon="✅")
+st.set_page_config(page_title="Kinkin Manager (V69 - Hotfix)", layout="wide", page_icon="🔥")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -50,6 +50,7 @@ COL_FILTER = "Dieu_Kien_Loc"
 COL_HEADER = "Lay_Header"         
 COL_COPY_FLAG = "Copy_Flag" 
 
+# [V69] Đã xóa hoàn toàn COL_MODE
 REQUIRED_COLS_CONFIG = [
     COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, 
     COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
@@ -353,17 +354,16 @@ def write_detailed_log(creds, log_data_list):
             wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=15)
             wks.append_row(["Thời gian", "Vùng lấy", "Tháng", "User", "Link Nguồn", "Link Đích", "Sheet Đích", "Sheet Nguồn", "Kết Quả", "Số Dòng", "Range", "Block"])
         
-        # [V68] Chuyển đổi mọi thứ sang string để tránh lỗi JSON
         cleaned_list = []
         for row in log_data_list:
             cleaned_list.append([str(x) for x in row])
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V68): {str(e)}")
+        st.warning(f"Lỗi ghi log (V69): {str(e)}")
 
 # ==========================================
-# 4. CORE ETL (V68 - FIX ALL)
+# 4. CORE ETL (V69 - HOTFIX)
 # ==========================================
 def fetch_data_v4(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
@@ -395,11 +395,9 @@ def fetch_data_v4(row_config, creds, target_headers=None):
         data = safe_api_call(wks_source.get_all_values)
         if not data: return pd.DataFrame(), sheet_id, "Sheet trắng/Lỗi tải"
 
-        # [V68 Logic]: Luôn coi dòng 0 là Header để đặt tên cột
         header_row = data[0]
         body_rows = data[1:]
         
-        # Xử lý tên cột trùng
         unique_headers = []
         seen = {}
         for col in header_row:
@@ -412,7 +410,6 @@ def fetch_data_v4(row_config, creds, target_headers=None):
         
         df_working = pd.DataFrame(body_rows, columns=unique_headers)
 
-        # Mapping Cột
         if target_headers:
             num_src = len(df_working.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
@@ -421,7 +418,6 @@ def fetch_data_v4(row_config, creds, target_headers=None):
             df_working = df_working.rename(columns=rename_map)
             if num_src > num_tgt: df_working = df_working.iloc[:, :num_tgt]
 
-        # Range Slicing
         if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
                 s_str, e_str = data_range_str.split(":")
@@ -429,13 +425,11 @@ def fetch_data_v4(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_working = df_working.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Filter
         if raw_filter:
             df_filtered, err = apply_smart_filter_v64(df_working, raw_filter)
             if err: return None, sheet_id, f"⚠️ {err}"
             df_working = df_filtered
 
-        # [V68 Logic Header]: Tích -> Chèn header cũ vào làm data
         if include_header:
             df_header_row = pd.DataFrame([df_working.columns.tolist()], columns=df_working.columns)
             df_final = pd.concat([df_header_row, df_working], ignore_index=True)
@@ -444,7 +438,6 @@ def fetch_data_v4(row_config, creds, target_headers=None):
 
         df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
         
-        # Thêm cột hệ thống
         df_final[SYS_COL_LINK] = link_src.strip()
         df_final[SYS_COL_SHEET] = source_label.strip()
         df_final[SYS_COL_MONTH] = month_val.strip()
@@ -627,19 +620,19 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     ok, msg, batch_res_map = write_strict_sync_v2(tasks, t_link, t_sheet, creds, st)
                     if not ok: st.error(msg); all_ok = False
                     else: st.success(msg)
+                    
                     final_res_map.update(batch_res_map)
                     del tasks; gc.collect()
-                
-                # [V68] Move Logging out of `if tasks` to ensure failed rows are logged too
-                for r in group_rows:
-                    row_idx = r.get('_index', -1)
-                    res_status, res_range, res_count = final_res_map.get(row_idx, ("Lỗi", "", 0))
                     
-                    log_ents.append([
-                        now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, 
-                        r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), 
-                        res_status, res_count, res_range, block_name_run
-                    ])
+                    for r in group_rows:
+                        row_idx = r.get('_index', -1)
+                        res_status, res_range, res_count = final_res_map.get(row_idx, ("Lỗi", "", 0))
+                        
+                        log_ents.append([
+                            now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, 
+                            r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), 
+                            res_status, res_count, res_range, block_name_run
+                        ])
         
         write_detailed_log(creds, log_ents)
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
@@ -735,7 +728,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V68 - Final Log Fix)", help="V68: Fix Log, Title, Data Type"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V69 - Hotfix)", help="V69: Hotfix KeyError"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -830,7 +823,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v68"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v69"
     )
 
     if edt_df[COL_COPY_FLAG].any():
