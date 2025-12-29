@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V60 - Custom Filter)", layout="wide", page_icon="🛠️")
+st.set_page_config(page_title="Kinkin Manager (V62 - Anti Quota)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -75,7 +75,7 @@ LOG_BUFFER_SIZE = 5
 LOG_FLUSH_INTERVAL = 10 
 
 # ==========================================
-# 2. AUTHENTICATION & UTILS
+# 2. AUTHENTICATION & UTILS (V62 IMPROVED)
 # ==========================================
 def get_creds():
     raw_creds = st.secrets["gcp_service_account"]
@@ -86,15 +86,32 @@ def get_creds():
     if "private_key" in creds_info: creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
     return service_account.Credentials.from_service_account_info(creds_info, scopes=SCOPES)
 
+def safe_api_call(func, *args, **kwargs):
+    """
+    [V62] Hàm bọc an toàn để chống lỗi 429 Quota Exceeded.
+    Tự động chờ và thử lại khi gặp lỗi.
+    """
+    max_retries = 5
+    for i in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            # Kiểm tra lỗi 429 (Quota exceeded)
+            is_quota_error = "429" in str(e) or (hasattr(e, 'response') and getattr(e.response, 'status_code', 0) == 429)
+            
+            if is_quota_error:
+                wait_time = (2 ** i) + 5  # Chờ lâu hơn: 6s, 7s, 9s, 13s...
+                print(f"⚠️ Quota exceeded. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+            elif i == max_retries - 1:
+                raise e  # Hết lượt thử thì báo lỗi thật
+            else:
+                time.sleep(2) # Lỗi khác thì chờ ít hơn
+    return None
+
 def get_sh_with_retry(creds, sheet_id_or_key):
     gc = gspread.authorize(creds)
-    max_retries = 3
-    for i in range(max_retries):
-        try: return gc.open_by_key(sheet_id_or_key)
-        except Exception as e:
-            if i == max_retries - 1: raise e
-            time.sleep((2 ** i) + 0.5) 
-    return None
+    return safe_api_call(gc.open_by_key, sheet_id_or_key)
 
 def col_name_to_index(col_name):
     col_name = col_name.upper()
@@ -115,70 +132,48 @@ def ensure_sheet_headers(wks, required_columns):
         if not current_headers: wks.append_row(required_columns)
     except: pass
 
-# --- [V60] CUSTOM FILTER ENGINE (Trị lỗi Backtick) ---
-def apply_custom_filter_v60(df, filter_str):
-    """
-    Hàm lọc thủ công, không dùng df.query để tránh lỗi syntax.
-    Hỗ trợ: =, ==, !=, >, <, >=, <=, contains
-    """
+# --- [V61] SMART FILTER PARSER ---
+def apply_smart_filter_v61(df, filter_str):
     if not filter_str or filter_str.strip() == "": return df, None
-
     fs = filter_str.strip()
-    
-    # 1. Xử lý toán tử 'contains' (Chứa)
-    if " contains " in fs:
-        parts = fs.split(" contains ", 1)
-        col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
-        val = parts[1].strip().replace("'", "").replace('"', "")
-        if col not in df.columns: return None, f"Cột '{col}' không tồn tại"
-        try:
-            return df[df[col].astype(str).str.contains(val, case=False, na=False)], None
-        except Exception as e: return None, str(e)
-
-    # 2. Xử lý các toán tử so sánh
-    # Lưu ý: check >=, <= trước > và <
-    operators = ["==", "!=", ">=", "<=", ">", "<", "="] 
+    operators = [" contains ", "==", "!=", ">=", "<=", ">", "<", "="]
     selected_op = None
-    
     for op in operators:
-        if op in fs:
-            selected_op = op
-            break
-            
-    if selected_op:
-        parts = fs.split(selected_op, 1)
-        col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
-        val_raw = parts[1].strip()
-        
-        # Xóa quote bao quanh giá trị nếu người dùng lỡ nhập
-        if (val_raw.startswith("'") and val_raw.endswith("'")) or (val_raw.startswith('"') and val_raw.endswith('"')):
-            val_clean = val_raw[1:-1]
+        if op in fs: selected_op = op; break
+    if not selected_op: return None, f"Không tìm thấy toán tử trong: {fs}"
+
+    parts = fs.split(selected_op, 1)
+    user_col = parts[0].strip().replace("`", "").replace("'", "").replace('"', "")
+    
+    real_col_name = None
+    if user_col in df.columns: real_col_name = user_col
+    else:
+        for col in df.columns:
+            if str(col).strip() == user_col: real_col_name = col; break
+    
+    if not real_col_name: return None, f"Không tìm thấy cột '{user_col}'"
+
+    user_val = parts[1].strip()
+    if (user_val.startswith("'") and user_val.endswith("'")) or (user_val.startswith('"') and user_val.endswith('"')):
+        clean_val = user_val[1:-1]
+    else: clean_val = user_val
+
+    try:
+        if selected_op == " contains ":
+            return df[df[real_col_name].astype(str).str.contains(clean_val, case=False, na=False)], None
+        elif selected_op in ["=", "=="]:
+            return df[df[real_col_name].astype(str) == str(clean_val)], None
+        elif selected_op == "!=":
+            return df[df[real_col_name].astype(str) != str(clean_val)], None
         else:
-            val_clean = val_raw
-
-        if col not in df.columns: return None, f"Cột '{col}' không tồn tại"
-
-        try:
-            if selected_op in ["=", "=="]:
-                # So sánh chuỗi hoặc số
-                return df[df[col].astype(str) == str(val_clean)], None
-            elif selected_op == "!=":
-                return df[df[col].astype(str) != str(val_clean)], None
-            else:
-                # So sánh số học (> < >= <=)
-                # Cần ép kiểu về số
-                numeric_col = pd.to_numeric(df[col], errors='coerce')
-                numeric_val = float(val_clean)
-                
-                if selected_op == ">": return df[numeric_col > numeric_val], None
-                if selected_op == "<": return df[numeric_col < numeric_val], None
-                if selected_op == ">=": return df[numeric_col >= numeric_val], None
-                if selected_op == "<=": return df[numeric_col <= numeric_val], None
-        except Exception as e:
-            return None, f"Lỗi so sánh: {str(e)}"
-
-    # Nếu không tìm thấy toán tử nào hợp lệ
-    return None, f"Không hiểu cú pháp lọc: {fs}"
+            numeric_col = pd.to_numeric(df[real_col_name], errors='coerce')
+            numeric_val = float(clean_val)
+            if selected_op == ">": return df[numeric_col > numeric_val], None
+            if selected_op == "<": return df[numeric_col < numeric_val], None
+            if selected_op == ">=": return df[numeric_col >= numeric_val], None
+            if selected_op == "<=": return df[numeric_col <= numeric_val], None
+    except Exception as e: return None, f"Lỗi xử lý: {str(e)}"
+    return df, None
 
 # --- LOGGING SYSTEM ---
 def init_log_buffer():
@@ -188,7 +183,6 @@ def init_log_buffer():
 def flush_logs(creds, force=False):
     buffer = st.session_state.get('log_buffer', [])
     last_flush = st.session_state.get('last_log_flush', 0)
-    
     if (force or len(buffer) >= LOG_BUFFER_SIZE or (time.time() - last_flush > LOG_FLUSH_INTERVAL)) and buffer:
         try:
             sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
@@ -196,7 +190,8 @@ def flush_logs(creds, force=False):
             except: 
                 wks = sh.add_worksheet(SHEET_ACTIVITY_NAME, rows=1000, cols=4)
                 wks.append_row(["Thời gian", "Người dùng", "Hành vi", "Trạng thái"])
-            wks.append_rows(buffer)
+            # [V62] Dùng safe_api_call cho log luôn
+            safe_api_call(wks.append_rows, buffer)
             st.session_state['log_buffer'] = []
             st.session_state['last_log_flush'] = time.time()
         except: pass
@@ -367,11 +362,13 @@ def write_detailed_log(creds, log_data_list):
         except: 
             wks = sh.add_worksheet(SHEET_LOG_NAME, rows=1000, cols=15)
             wks.append_row(["Thời gian", "Vùng lấy", "Tháng", "User", "Link Nguồn", "Link Đích", "Sheet Đích", "Sheet Nguồn", "Kết Quả", "Số Dòng", "Range", "Block"])
-        wks.append_rows(log_data_list)
+        
+        # [V62] Dùng safe_api_call để append log
+        safe_api_call(wks.append_rows, log_data_list)
     except: pass
 
 # ==========================================
-# 4. CORE ETL (V60 - CUSTOM FILTER)
+# 4. CORE ETL (V62 - ANTI QUOTA)
 # ==========================================
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
@@ -391,8 +388,10 @@ def fetch_data_v3(row_config, creds, target_headers=None):
             except: return None, sheet_id, f"❌ 404 Sheet: {source_label}"
         else: wks_source = sh_source.sheet1
             
-        data = wks_source.get_all_values()
-        if not data: return pd.DataFrame(), sheet_id, "Sheet trắng"
+        # [V62] Dùng safe_api_call để đọc dữ liệu (QUAN TRỌNG)
+        data = safe_api_call(wks_source.get_all_values)
+        
+        if not data: return pd.DataFrame(), sheet_id, "Sheet trắng/Lỗi tải"
 
         header_row = []
         body_data = []
@@ -404,7 +403,7 @@ def fetch_data_v3(row_config, creds, target_headers=None):
 
         df_body = pd.DataFrame(body_data)
         
-        # Mapping Cột (Nếu có)
+        # Mapping Cột
         if target_headers:
             num_src = len(df_body.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
@@ -420,9 +419,9 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_body = df_body.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Filter [V60 FIX]
+        # Filter [V61 SMART PARSER]
         if raw_filter:
-            df_filtered, err = apply_custom_filter_v60(df_body, raw_filter)
+            df_filtered, err = apply_smart_filter_v61(df_body, raw_filter)
             if err: return None, sheet_id, f"⚠️ Lỗi Lọc: {err}"
             df_body = df_filtered
 
@@ -448,7 +447,7 @@ def fetch_data_v3(row_config, creds, target_headers=None):
     except Exception as e: return None, sheet_id, f"Lỗi tải: {str(e)}"
 
 def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
-    all_values = wks.get_all_values()
+    all_values = safe_api_call(wks.get_all_values) # [V62] Safe call
     if not all_values: return []
     headers = all_values[0]
     try:
@@ -478,7 +477,8 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
     batch_size = 100
     for i in range(0, len(requests), batch_size):
         if log_container: log_container.write(f"✂️ Xóa batch {i//batch_size + 1}...")
-        sh.batch_update({'requests': requests[i:i+batch_size]}); time.sleep(1)
+        safe_api_call(sh.batch_update, {'requests': requests[i:i+batch_size]}) # [V62] Safe call
+        time.sleep(1)
 
 def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_container):
     try:
@@ -499,7 +499,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         
         if df_new_all.empty: return True, "No Data", {}
 
-        existing_headers = wks.row_values(1)
+        existing_headers = safe_api_call(wks.row_values, 1) # [V62] Safe call
         if not existing_headers:
             final_headers = df_new_all.columns.tolist()
             wks.update(range_name="A1", values=[final_headers])
@@ -527,11 +527,12 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
             log_container.write("✅ Đã xóa.")
         
         log_container.write(f"🚀 Ghi {len(df_aligned)} dòng mới...")
-        next_row = len(wks.get_all_values()) + 1
+        next_row = len(safe_api_call(wks.get_all_values)) + 1 # [V62] Safe
         chunk_size = 5000
         new_vals = df_aligned.fillna('').values.tolist()
         for i in range(0, len(new_vals), chunk_size):
-            wks.append_rows(new_vals[i:i+chunk_size], value_input_option='USER_ENTERED'); time.sleep(1)
+            safe_api_call(wks.append_rows, new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
+            time.sleep(1)
 
         range_map = {}
         curr = next_row
@@ -559,6 +560,7 @@ def check_permissions_ui(rows, creds, container, user_id):
         ok, msg = verify_access_fast(link, creds)
         if not ok: container.error(f"❌ {link}"); err_count += 1
         prog.progress((i+1)/len(unique))
+        time.sleep(1) # [V62] Throttling
     
     if err_count == 0: container.success("✅ OK All")
     log_user_action_buffered(creds, user_id, "Quét Quyền", f"Hoàn tất. Lỗi: {err_count}", force_flush=True)
@@ -587,7 +589,7 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                         sh_t = get_sh_with_retry(creds, tid)
                         try: wks_t = sh_t.worksheet(t_sheet)
                         except: wks_t = None
-                        if wks_t: target_headers = wks_t.row_values(1)
+                        if wks_t: target_headers = safe_api_call(wks_t.row_values, 1) # [V62] Safe
                 except: pass
 
                 tasks = []
@@ -596,6 +598,8 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     row_idx = r.get('_index', -1)
                     st.write(f"⬇️ Tải: {lnk[-10:]} ({lbl})")
                     df, sid, msg = fetch_data_v3(r, creds, target_headers)
+                    time.sleep(1.5) # [V62] Throttling - Chậm mà chắc
+                    
                     if df is not None: 
                         tasks.append((df, lnk, row_idx)); total_rows += len(df)
                     else: 
@@ -616,10 +620,8 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                             log_ents.append([now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), "OK", "", calc, block_name_run])
         
         write_detailed_log(creds, log_ents)
-        
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
         log_user_action_buffered(creds, user_id, f"Kết quả chạy {block_name_run}", status_msg, force_flush=True)
-        
         return all_ok, res_map, total_rows
     finally: release_lock(creds, user_id)
 
@@ -708,7 +710,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V60 - Custom Filter)", help="V60: Filter thủ công + Tạo sheet đích"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V62 - Anti Quota)", help="V62: Safe API Call + Throttling"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -744,7 +746,6 @@ def main_ui():
             if new_type == "Chạy theo phút":
                 v = int(d_val1) if (d_type == "Chạy theo phút" and d_val1.isdigit()) else 30
                 n_val1 = str(st.slider("Tần suất (Phút):", 30, 180, max(30, v), 10))
-                n_val2 = "" 
             elif new_type == "Hàng ngày":
                 hours = [f"{i:02d}:00" for i in range(24)]
                 idx = hours.index(d_val1) if (d_type=="Hàng ngày" and d_val1 in hours) else 8
@@ -804,7 +805,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v60"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v62"
     )
 
     if edt_df[COL_COPY_FLAG].any():
