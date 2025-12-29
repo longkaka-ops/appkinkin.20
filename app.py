@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V49 - Header Isolation)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V50 - Persistence)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -71,7 +71,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # ==========================================
-# 2. UTILS
+# 2. AUTHENTICATION & UTILS
 # ==========================================
 def get_creds():
     raw_creds = st.secrets["gcp_service_account"]
@@ -298,31 +298,24 @@ def fetch_data_v3(row_config, creds, target_headers=None):
         data = wks_source.get_all_values()
         if not data: return pd.DataFrame(), sheet_id, "Sheet trắng"
 
-        # [V49] Tách riêng Header và Body
         header_row = []
         body_data = []
 
         if include_header:
-            # Nếu lấy header, ta tạm cất dòng 1 (header) đi
             header_row = data[0]
-            body_data = data[1:] # Chỉ lọc trên phần thân
+            body_data = data[1:] 
         else:
-            # Không lấy header, bỏ dòng 1, chỉ lấy thân
             body_data = data[1:]
 
-        # Tạo DF từ Body để xử lý Lọc/Range
         df_body = pd.DataFrame(body_data)
         
-        # Nếu có target headers, gán tên cột cho body để lọc chính xác
         if target_headers:
             num_src = len(df_body.columns); num_tgt = len(target_headers)
             min_cols = min(num_src, num_tgt)
             rename_map = {i: target_headers[i] for i in range(min_cols)}
             df_body = df_body.rename(columns=rename_map)
-            # Cắt cột thừa nếu nguồn nhiều hơn đích
             if num_src > num_tgt: df_body = df_body.iloc[:, :num_tgt]
 
-        # Xử lý Range trên Body
         if data_range_str != "Lấy hết" and ":" in data_range_str:
             try:
                 s_str, e_str = data_range_str.split(":")
@@ -330,33 +323,23 @@ def fetch_data_v3(row_config, creds, target_headers=None):
                 if s_idx >= 0: df_body = df_body.iloc[:, s_idx : e_idx + 1]
             except: pass
 
-        # Xử lý Filter trên Body
         if filter_query and filter_query.lower() not in ['nan', '']:
             try: df_body = df_body.query(filter_query)
             except Exception as e: return None, sheet_id, f"⚠️ Query Lỗi: {e}"
 
-        # [V49] Sau khi lọc xong, nếu có Header thì gắn lại lên đầu
         if include_header and header_row:
-            # Tạo DF cho header (ép về cùng tên cột với df_body để concat được)
-            # Lưu ý: header_row có thể dài hơn hoặc ngắn hơn df_body columns
-            # Ta phải cắt gọt header_row cho khớp với số cột hiện tại của df_body
             current_cols = df_body.columns.tolist()
-            
-            # Chuẩn bị row header có độ dài bằng số cột hiện tại của df_body
             adjusted_header = []
             for i in range(len(current_cols)):
                 if i < len(header_row): adjusted_header.append(header_row[i])
                 else: adjusted_header.append("")
-            
             df_header = pd.DataFrame([adjusted_header], columns=current_cols)
-            # Gắn Header lên đầu Body
             df_final = pd.concat([df_header, df_body], ignore_index=True)
         else:
             df_final = df_body
 
         df_final = df_final.astype(str).replace(['nan', 'None', '<NA>', 'null'], '')
         
-        # Gắn Tag Hệ thống
         df_final[SYS_COL_LINK] = link_src.strip()
         df_final[SYS_COL_SHEET] = source_label.strip()
         df_final[SYS_COL_MONTH] = month_val.strip()
@@ -593,7 +576,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V49 - Header Isolation)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V50 - Persistence)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -611,42 +594,63 @@ def main_ui():
              st.session_state['df_full_config'] = pd.concat([df_cfg, bd], ignore_index=True)
              save_block_config_to_sheet(bd, new_b, creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
+        # [V50] Scheduler UI (Persistence)
         with st.expander("⏰ Lịch chạy tự động", expanded=True):
-            st.caption(f"Cài đặt cho: **{sel_blk}**")
             df_sched = load_scheduler_config(creds)
-            if SCHED_COL_BLOCK in df_sched.columns: curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk]
-            else: curr_row = pd.DataFrame()
+            
+            # Load config cũ
+            curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk] if SCHED_COL_BLOCK in df_sched.columns else pd.DataFrame()
+            
             d_type = str(curr_row.iloc[0].get(SCHED_COL_TYPE, "Không chạy")) if not curr_row.empty else "Không chạy"
             d_val1 = str(curr_row.iloc[0].get(SCHED_COL_VAL1, "")) if not curr_row.empty else ""
             d_val2 = str(curr_row.iloc[0].get(SCHED_COL_VAL2, "")) if not curr_row.empty else ""
+
+            # Hiển thị trạng thái hiện tại
+            if d_type != "Không chạy":
+                st.info(f"✅ Đang cài: {d_type} | {d_val1} {d_val2}")
+            else:
+                st.info("⚪ Chưa cài đặt lịch")
+
             opts = ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"]
-            new_type = st.selectbox("Kiểu:", opts, index=opts.index(d_type) if d_type in opts else 0)
-            n_val1 = d_val1; n_val2 = d_val2
+            # Auto-select type
+            idx_def = opts.index(d_type) if d_type in opts else 0
+            new_type = st.selectbox("Kiểu:", opts, index=idx_def)
             
+            n_val1 = d_val1; n_val2 = d_val2
+
             if new_type == "Chạy theo phút":
-                v = int(d_val1) if d_val1.isdigit() else 30
-                n_val1 = str(st.slider("Tần suất (Phút):", min_value=30, max_value=180, value=max(30, v), step=10))
+                # Chỉ lấy giá trị cũ NẾU type cũ cũng là "Chạy theo phút"
+                def_v = int(d_val1) if (d_type == "Chạy theo phút" and d_val1.isdigit()) else 30
+                n_val1 = str(st.slider("Tần suất (Phút):", 30, 180, max(30, def_v), 10))
                 n_val2 = "" 
+
             elif new_type == "Hàng ngày":
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
-                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8
-                n_val1 = st.selectbox("Chọn giờ chạy (0-23h):", hours_opts, index=h_idx)
+                def_idx = hours_opts.index(d_val1) if (d_type == "Hàng ngày" and d_val1 in hours_opts) else 8
+                n_val1 = st.selectbox("Chọn giờ (0-23h):", hours_opts, index=def_idx)
                 n_val2 = ""
+
             elif new_type == "Hàng tuần":
-                old_days = [x.strip() for x in d_val2.split(",")] if d_val2 else []
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
                 days_opts = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
+                
+                # Load old values IF matching type
+                old_days = [x.strip() for x in d_val2.split(",")] if d_type == "Hàng tuần" else []
+                def_h_idx = hours_opts.index(d_val1) if (d_type == "Hàng tuần" and d_val1 in hours_opts) else 8
+                
                 sel_days = st.multiselect("Chọn Thứ:", days_opts, default=[d for d in old_days if d in days_opts])
-                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8
-                n_val1 = st.selectbox("Chọn Giờ:", hours_opts, index=h_idx)
+                n_val1 = st.selectbox("Chọn Giờ:", hours_opts, index=def_h_idx)
                 n_val2 = ",".join(sel_days)
+
             elif new_type == "Hàng tháng":
-                old_dates = [x.strip() for x in d_val2.split(",")] if d_val2 else []
                 hours_opts = [f"{i:02d}:00" for i in range(24)]
                 dates_opts = [str(i) for i in range(1, 32)]
-                sel_dates = st.multiselect("Chọn Ngày (1-31):", dates_opts, default=[d for d in old_dates if d in dates_opts])
-                h_idx = hours_opts.index(d_val1) if d_val1 in hours_opts else 8
-                n_val1 = st.selectbox("Chọn Giờ:", hours_opts, index=h_idx)
+                
+                old_dates = [x.strip() for x in d_val2.split(",")] if d_type == "Hàng tháng" else []
+                def_h_idx = hours_opts.index(d_val1) if (d_type == "Hàng tháng" and d_val1 in hours_opts) else 8
+                
+                sel_dates = st.multiselect("Chọn Ngày:", dates_opts, default=[d for d in old_dates if d in dates_opts])
+                n_val1 = st.selectbox("Chọn Giờ:", hours_opts, index=def_h_idx)
                 n_val2 = ",".join(sel_dates)
 
             if st.button("💾 Lưu Lịch"):
@@ -689,7 +693,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v49"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v50"
     )
 
     if edt_df[COL_COPY_FLAG].any():
