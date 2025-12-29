@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG & BIẾN TOÀN CỤC
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V41 - Stable)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V42 - Auto Init)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -35,35 +35,46 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
-# Cột Config
+# --- ĐỊNH NGHĨA CỘT CHUẨN (User Provided) ---
+# 1. Cột Config Dữ Liệu (luu_cau_hinh)
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
-COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
-COL_TGT_LINK = "Link dữ liệu đích"
-COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
-COL_TGT_SHEET = "Tên sheet dữ liệu đích"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
 COL_MONTH = "Tháng"
+COL_SRC_LINK = "Link dữ liệu lấy dữ liệu"
+COL_TGT_LINK = "Link dữ liệu đích"
+COL_TGT_SHEET = "Tên sheet dữ liệu đích"
+COL_SRC_SHEET = "Tên sheet nguồn dữ liệu gốc"
 COL_RESULT = "Kết quả"
 COL_LOG_ROW = "Dòng dữ liệu"
-# Cột Tính Năng
 COL_FILTER = "Dieu_Kien_Loc"      
 COL_HEADER = "Lay_Header"         
 COL_MODE = "Che_Do_Ghi"           
-COL_COPY_FLAG = "Copy_Flag" 
+COL_COPY_FLAG = "Copy_Flag" # Cột ảo trên UI
 
-# Cột Scheduler
+# Danh sách cột chuẩn để khởi tạo sheet Config
+REQUIRED_COLS_CONFIG = [
+    COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, 
+    COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
+    COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE
+]
+
+# 2. Cột Scheduler (sys_config)
 SCHED_COL_BLOCK = "Block_Name"
 SCHED_COL_TYPE = "Loai_Lich"
 SCHED_COL_VAL1 = "Thong_So_Chinh"
 SCHED_COL_VAL2 = "Thong_So_Phu"
 
-# Cột Note
+REQUIRED_COLS_SCHED = [SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_COL_VAL2]
+
+# 3. Cột Note
 NOTE_COL_ID = "ID"
 NOTE_COL_BLOCK = "Tên Khối"
 NOTE_COL_CONTENT = "Nội dung Note"
 
-# Cột Hệ Thống (Bắt buộc)
+REQUIRED_COLS_NOTE = [NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT]
+
+# 4. Cột Hệ Thống (Key để xóa)
 SYS_COL_LINK = "Link file nguồn"
 SYS_COL_SHEET = "Sheet nguồn"
 SYS_COL_MONTH = "Tháng"
@@ -72,7 +83,7 @@ DEFAULT_BLOCK_NAME = "Block_Mac_Dinh"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # ==========================================
-# 2. HÀM CỐT LÕI (AUTHENTICATION & UTILS)
+# 2. HÀM CỐT LÕI (AUTH & UTILS)
 # ==========================================
 def get_creds():
     raw_creds = st.secrets["gcp_service_account"]
@@ -122,14 +133,26 @@ def smart_filter_fix(query_str):
         return f"{left} {selected_op} {right}"
     return q
 
-# --- LOGGING SYSTEM ---
+def ensure_sheet_headers(wks, required_columns):
+    """Hàm tự động kiểm tra và điền Header nếu thiếu"""
+    try:
+        current_headers = wks.row_values(1)
+        if not current_headers:
+            wks.append_row(required_columns)
+            return
+        
+        # Nếu có header nhưng thiếu cột, có thể bổ sung (đơn giản nhất là kiểm tra cột đầu tiên)
+        if current_headers[0] != required_columns[0]:
+             # Header sai hoặc khác, cảnh báo nhưng ko overwrite để an toàn, hoặc overwrite nếu sheet ít dòng
+             pass 
+    except: pass
+
+# --- LOGGING ---
 def log_user_action(creds, user_id, action, status=""):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_ACTIVITY_NAME)
-        except: 
-            wks = sh.add_worksheet(SHEET_ACTIVITY_NAME, rows=1000, cols=4)
-            wks.append_row(["Thời gian", "Người dùng", "Hành vi", "Trạng thái"])
+        except: wks = sh.add_worksheet(SHEET_ACTIVITY_NAME, rows=1000, cols=4); wks.append_row(["Thời gian", "Người dùng", "Hành vi", "Trạng thái"])
         tz = pytz.timezone('Asia/Ho_Chi_Minh')
         wks.append_row([datetime.now(tz).strftime("%d/%m/%Y %H:%M:%S"), user_id, action, status])
     except: pass
@@ -154,7 +177,7 @@ def write_detailed_log(creds, log_data_list):
         wks.append_rows(log_data_list)
     except: pass
 
-# --- LOGIN FUNCTION (MUST BE HERE) ---
+# --- LOGIN (TOP PRIORITY) ---
 def check_login():
     if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     if 'current_user_id' not in st.session_state: st.session_state['current_user_id'] = "Unknown"
@@ -170,10 +193,8 @@ def check_login():
         pwd = st.text_input("Mật khẩu:", type="password")
         if st.button("Đăng Nhập", use_container_width=True):
             if pwd in AUTHORIZED_USERS:
-                st.session_state['logged_in'] = True
-                st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
-                log_user_action(get_creds(), AUTHORIZED_USERS[pwd], "Đăng nhập", "Success")
-                st.rerun()
+                st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[pwd]
+                log_user_action(get_creds(), AUTHORIZED_USERS[pwd], "Đăng nhập", "Success"); st.rerun()
             else: st.error("Sai mật khẩu")
     return False
 
@@ -213,15 +234,17 @@ def release_lock(creds, user_id):
         if val == user_id: wks.update("A2:C2", [["FALSE", "", ""]])
     except: pass
 
+# --- NOTES ---
 def load_notes_data(creds):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_NOTE_NAME)
-        except: wks = sh.add_worksheet(SHEET_NOTE_NAME, rows=100, cols=5); wks.append_row([NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT])
+        except: wks = sh.add_worksheet(SHEET_NOTE_NAME, rows=100, cols=5); ensure_sheet_headers(wks, REQUIRED_COLS_NOTE)
+        ensure_sheet_headers(wks, REQUIRED_COLS_NOTE)
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
-        if df.empty: return pd.DataFrame(columns=[NOTE_COL_ID, NOTE_COL_BLOCK, NOTE_COL_CONTENT])
+        if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_NOTE)
         return df.dropna(how='all')
-    except: return pd.DataFrame()
+    except: return pd.DataFrame(columns=REQUIRED_COLS_NOTE)
 
 def save_notes_data(df_notes, creds, user_id):
     try:
@@ -242,30 +265,41 @@ def show_note_popup(creds, all_blocks, user_id):
         df_notes, num_rows="dynamic", use_container_width=True,
         column_config={
             NOTE_COL_ID: st.column_config.TextColumn("ID", disabled=True, width="small"),
-            NOTE_COL_BLOCK: st.column_config.SelectboxColumn("Khối", options=all_blocks, required=True),
-            NOTE_COL_CONTENT: st.column_config.TextColumn("Nội dung", width="large")
+            NOTE_COL_BLOCK: st.column_config.SelectboxColumn("Tên Khối", options=all_blocks, required=True),
+            NOTE_COL_CONTENT: st.column_config.TextColumn("Nội dung Note", width="large")
         }, key="note_popup"
     )
     if st.button("💾 Lưu Note", type="primary"):
         if save_notes_data(edited_notes, creds, user_id):
             st.success("Đã lưu!"); time.sleep(1); st.rerun()
 
+# --- SCHEDULER (AUTO-FIX KEYERROR) ---
 def load_scheduler_config(creds):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         try: wks = sh.worksheet(SHEET_SYS_CONFIG)
-        except: wks = sh.add_worksheet(SHEET_SYS_CONFIG, rows=50, cols=5); wks.append_row([SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_COL_VAL2])
+        except: 
+            wks = sh.add_worksheet(SHEET_SYS_CONFIG, rows=50, cols=5)
+            wks.append_row(REQUIRED_COLS_SCHED) # Auto create headers
+        
+        # Ensure headers exist if sheet exists but empty
+        ensure_sheet_headers(wks, REQUIRED_COLS_SCHED)
+        
         df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
-        for c in [SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_COL_VAL2]:
-            if c not in df.columns: return pd.DataFrame()
+        # Check integrity
+        if SCHED_COL_BLOCK not in df.columns:
+            # Force fix
+            wks.clear(); wks.append_row(REQUIRED_COLS_SCHED)
+            return pd.DataFrame(columns=REQUIRED_COLS_SCHED)
+            
         return df.dropna(how='all')
-    except: return pd.DataFrame()
+    except: return pd.DataFrame(columns=REQUIRED_COLS_SCHED)
 
 def save_scheduler_config(df_sched, creds, user_id):
     try:
         sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
         wks = sh.worksheet(SHEET_SYS_CONFIG)
-        cols = [SCHED_COL_BLOCK, SCHED_COL_TYPE, SCHED_COL_VAL1, SCHED_COL_VAL2]
+        cols = REQUIRED_COLS_SCHED
         for c in cols:
             if c not in df_sched.columns: df_sched[c] = ""
         wks.clear(); set_with_dataframe(wks, df_sched[cols].fillna(""), row=1, col=1)
@@ -273,7 +307,7 @@ def save_scheduler_config(df_sched, creds, user_id):
     except: return False
 
 # ==========================================
-# 4. DATA PROCESSING (FETCH, WRITE, PIPELINE)
+# 4. CORE ETL
 # ==========================================
 def fetch_data_v3(row_config, creds, target_headers=None):
     link_src = str(row_config.get(COL_SRC_LINK, '')).strip()
@@ -329,7 +363,7 @@ def fetch_data_v3(row_config, creds, target_headers=None):
     if df is not None:
         df[SYS_COL_LINK] = link_src.strip(); df[SYS_COL_SHEET] = source_label.strip(); df[SYS_COL_MONTH] = month_val.strip()
         return df, sheet_id, status_msg
-    return None, sheet_id, "Lỗi không xác định"
+    return None, sheet_id, "Lỗi"
 
 def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
     all_values = wks.get_all_values()
@@ -422,6 +456,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         return True, f"Cập nhật {len(df_aligned)} dòng", range_map
     except Exception as e: return False, f"Lỗi Ghi: {str(e)}", {}
 
+# --- PIPELINE ---
 def verify_access_fast(url, creds):
     sheet_id = extract_id(url)
     if not sheet_id: return False, "Link lỗi"
@@ -491,14 +526,18 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
     finally: release_lock(creds, user_id)
 
 # ==========================================
-# 5. CONFIG MANAGEMENT & MAIN UI
+# 5. MAIN UI
 # ==========================================
 @st.cache_data
 def load_full_config(_creds):
     sh = get_sh_with_retry(_creds, st.secrets["gcp_service_account"]["history_sheet_id"])
     wks = sh.worksheet(SHEET_CONFIG_NAME)
+    # Auto-healing config sheet
+    ensure_sheet_headers(wks, REQUIRED_COLS_CONFIG)
+    
     df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
-    if df.empty: return pd.DataFrame(columns=[COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, COL_RESULT, COL_LOG_ROW, COL_FILTER, COL_HEADER, COL_MODE])
+    if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
+    
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
     df[COL_MODE] = df[COL_MODE].replace('', 'APPEND').fillna('APPEND')
     df[COL_HEADER] = df[COL_HEADER].replace('', 'TRUE').fillna('TRUE')
@@ -540,19 +579,11 @@ def delete_block_direct(blk, creds, uid):
         wks.clear(); set_with_dataframe(wks, df_new, row=1, col=1)
     finally: release_lock(creds, uid)
 
-def save_full_direct(df, creds, uid):
-    if not acquire_lock(creds, uid): return
-    try:
-        sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"]); wks = sh.worksheet(SHEET_CONFIG_NAME)
-        df = df.astype(str).replace(['nan', 'None'], '')
-        wks.clear(); set_with_dataframe(wks, df, row=1, col=1)
-    finally: release_lock(creds, uid)
-
 def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V41 - Fixed)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V42 - Auto Heal)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -571,11 +602,16 @@ def main_ui():
              save_block_config_to_sheet(bd, new_b, creds, uid); st.session_state['target_block_display'] = new_b; st.rerun()
 
         # SCHEDULER SIDEBAR
-        with st.expander("⏰ Lịch chạy tự động"):
+        with st.expander("⏰ Lịch chạy"):
             st.caption(f"Cài đặt cho: **{sel_blk}**")
             df_sched = load_scheduler_config(creds)
-            curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk]
             
+            # Check key error prevention
+            if SCHED_COL_BLOCK in df_sched.columns:
+                curr_row = df_sched[df_sched[SCHED_COL_BLOCK] == sel_blk]
+            else:
+                curr_row = pd.DataFrame()
+
             d_type="Không chạy"; d_val1=""; d_val2=[]
             if not curr_row.empty:
                 d_type = str(curr_row.iloc[0].get(SCHED_COL_TYPE, "Không chạy"))
@@ -583,7 +619,8 @@ def main_ui():
                 v2s = str(curr_row.iloc[0].get(SCHED_COL_VAL2, ""))
                 if v2s: d_val2 = v2s.split(",")
 
-            new_type = st.selectbox("Kiểu:", ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"], index=["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"].index(d_type) if d_type in ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"] else 0)
+            opts = ["Không chạy", "Chạy theo phút", "Hàng ngày", "Hàng tuần", "Hàng tháng"]
+            new_type = st.selectbox("Kiểu:", opts, index=opts.index(d_type) if d_type in opts else 0)
             
             n_val1 = d_val1; n_val2 = ""
             if new_type == "Chạy theo phút":
@@ -599,7 +636,9 @@ def main_ui():
                 n_val2 = ",".join(dates); n_val1 = st.text_input("Giờ:", value=d_val1)
 
             if st.button("💾 Lưu Lịch"):
-                df_sched = df_sched[df_sched[SCHED_COL_BLOCK] != sel_blk]
+                # Clean old rows
+                if SCHED_COL_BLOCK in df_sched.columns:
+                    df_sched = df_sched[df_sched[SCHED_COL_BLOCK] != sel_blk]
                 new_r = {SCHED_COL_BLOCK: sel_blk, SCHED_COL_TYPE: new_type, SCHED_COL_VAL1: n_val1, SCHED_COL_VAL2: n_val2}
                 df_sched = pd.concat([df_sched, pd.DataFrame([new_r])], ignore_index=True)
                 save_scheduler_config(df_sched, creds, uid); st.success("OK"); st.rerun()
@@ -616,7 +655,7 @@ def main_ui():
             if st.button("🗑️ Delete"): delete_block_direct(sel_blk, creds, uid); st.cache_data.clear(); del st.session_state['df_full_config']; st.rerun()
         
         st.divider(); 
-        if st.button("📝 Notes"): show_note_popup(creds, blks, uid)
+        if st.button("📝 Note"): show_note_popup(creds, blks, uid)
 
     st.subheader(f"Config: {sel_blk}")
     curr_df = st.session_state['df_full_config'][st.session_state['df_full_config'][COL_BLOCK_NAME] == sel_blk].copy().reset_index(drop=True)
@@ -639,7 +678,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v41"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v42"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -654,31 +693,24 @@ def main_ui():
     with c1:
         if st.button("▶️ RUN BLOCK", type="primary"):
             rows = [r for r in edt_df.to_dict('records') if str(r.get(COL_STATUS,'')).strip() == "Chưa chốt & đang cập nhật"]
-            if not rows: st.warning("No rows to run"); st.stop()
-            st_cont = st.status("🚀 Đang chạy...", expanded=True)
+            if not rows: st.warning("No rows"); st.stop()
+            st_cont = st.status("🚀 Running...", expanded=True)
             ok, res, tot = process_pipeline_mixed(rows, uid, sel_blk, st_cont)
             for i, r in edt_df.iterrows():
                 l = str(r.get(COL_SRC_LINK,'')).strip()
                 if l in res: edt_df.at[i, COL_RESULT] = res[l][0]; edt_df.at[i, COL_LOG_ROW] = res[l][1]
             save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
-            st_cont.update(label=f"Xong! {tot} dòng.", state="complete", expanded=False); time.sleep(1); st.rerun()
-    with c2:
-        if st.button("🚀 RUN ALL"):
-            save_block_config_to_sheet(edt_df, sel_blk, creds, uid); full = load_full_config(creds)
-            st_cont = st.status("Running All...", expanded=True)
-            for b in full[COL_BLOCK_NAME].unique():
-                msk = (full[COL_BLOCK_NAME]==b) & (full[COL_STATUS]=="Chưa chốt & đang cập nhật")
-                rows = full[msk].to_dict('records')
-                if rows: process_pipeline_mixed(rows, uid, b, st_cont)
-            save_full_direct(full, creds, uid); st_cont.update(label="All Done!", state="complete")
+            st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False); time.sleep(1); st.rerun()
+    
     with c3:
         if st.button("🔍 Quét Quyền"):
-            with st.status("Kiểm tra...", expanded=True) as st_chk: check_permissions_ui(edt_df.to_dict('records'), creds, st_chk)
+            with st.status("Checking...", expanded=True) as st_chk: check_permissions_ui(edt_df.to_dict('records'), creds, st_chk)
+    
     with c4:
         if st.button("💾 Save"): save_block_config_to_sheet(edt_df, sel_blk, creds, uid); st.rerun()
 
-    st.divider(); st.caption("Nhật ký hoạt động")
-    if st.button("Tải lại Log"): st.cache_data.clear()
+    st.divider(); st.caption("Logs")
+    if st.button("Refresh Logs"): st.cache_data.clear()
     logs = fetch_activity_logs(creds, 20)
     if not logs.empty: st.dataframe(logs, use_container_width=True, hide_index=True)
 
