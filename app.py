@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V70 - Final Clean)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Kinkin Manager (V70 - Clean Fix)", layout="wide", page_icon="🚀")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -35,7 +35,7 @@ SHEET_LOCK_NAME = "sys_lock"
 SHEET_SYS_CONFIG = "sys_config"
 SHEET_NOTE_NAME = "database_ghi_chu"
 
-# --- ĐỊNH NGHĨA CỘT ---
+# --- ĐỊNH NGHĨA CỘT (Đã xóa COL_MODE) ---
 COL_BLOCK_NAME = "Block_Name"
 COL_STATUS = "Trạng thái"
 COL_DATA_RANGE = "Vùng lấy dữ liệu"
@@ -50,7 +50,6 @@ COL_FILTER = "Dieu_Kien_Loc"
 COL_HEADER = "Lay_Header"         
 COL_COPY_FLAG = "Copy_Flag" 
 
-# [V70] Đã loại bỏ hoàn toàn COL_MODE
 REQUIRED_COLS_CONFIG = [
     COL_BLOCK_NAME, COL_STATUS, COL_DATA_RANGE, COL_MONTH, 
     COL_SRC_LINK, COL_TGT_LINK, COL_TGT_SHEET, COL_SRC_SHEET, 
@@ -360,7 +359,7 @@ def write_detailed_log(creds, log_data_list):
             
         safe_api_call(wks.append_rows, cleaned_list)
     except Exception as e:
-        st.warning(f"Lỗi ghi log (V69): {str(e)}")
+        st.warning(f"Lỗi ghi log (V70): {str(e)}")
 
 # ==========================================
 # 4. CORE ETL (V68 - FIX ALL)
@@ -620,19 +619,19 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
                     ok, msg, batch_res_map = write_strict_sync_v2(tasks, t_link, t_sheet, creds, st)
                     if not ok: st.error(msg); all_ok = False
                     else: st.success(msg)
+                    
                     final_res_map.update(batch_res_map)
                     del tasks; gc.collect()
-                
-                # [V68] Move Logging out of `if tasks` to ensure failed rows are logged too
-                for r in group_rows:
-                    row_idx = r.get('_index', -1)
-                    res_status, res_range, res_count = final_res_map.get(row_idx, ("Lỗi", "", 0))
                     
-                    log_ents.append([
-                        now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, 
-                        r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), 
-                        res_status, res_count, res_range, block_name_run
-                    ])
+                    for r in group_rows:
+                        row_idx = r.get('_index', -1)
+                        res_status, res_range, res_count = final_res_map.get(row_idx, ("Lỗi", "", 0))
+                        
+                        log_ents.append([
+                            now, r.get(COL_DATA_RANGE), r.get(COL_MONTH), user_id, 
+                            r.get(COL_SRC_LINK), t_link, t_sheet, r.get(COL_SRC_SHEET), 
+                            res_status, res_count, res_range, block_name_run
+                        ])
         
         write_detailed_log(creds, log_ents)
         status_msg = f"Hoàn tất: Xử lý {total_rows} dòng. Lỗi: {not all_ok}"
@@ -653,7 +652,7 @@ def load_full_config(_creds):
     if df.empty: return pd.DataFrame(columns=REQUIRED_COLS_CONFIG)
     
     df[COL_BLOCK_NAME] = df[COL_BLOCK_NAME].replace('', DEFAULT_BLOCK_NAME).fillna(DEFAULT_BLOCK_NAME)
-    df[COL_MODE] = df[COL_MODE].replace('', 'APPEND').fillna('APPEND')
+    # [V70 Fix] Xóa dòng COL_MODE gây lỗi
     df[COL_HEADER] = df[COL_HEADER].replace('', 'FALSE').fillna('FALSE')
     if 'STT' in df.columns: df = df.drop(columns=['STT'])
     if 'Che_Do_Ghi' in df.columns: df = df.drop(columns=['Che_Do_Ghi'])
@@ -822,7 +821,7 @@ def main_ui():
             COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), 
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
-            COL_BLOCK_NAME: None, COL_MODE: None 
+            COL_BLOCK_NAME: None 
         }, use_container_width=True, num_rows="dynamic", key="edt_v70"
     )
 
