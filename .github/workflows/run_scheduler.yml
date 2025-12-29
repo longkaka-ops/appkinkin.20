@@ -1,0 +1,32 @@
+name: Auto Run Kinkin Job
+
+on:
+  schedule:
+    # Chạy mỗi 10 phút (Bạn có thể chỉnh lại tùy ý)
+    # Lưu ý: GitHub Actions có thể trễ vài phút so với giờ hẹn
+    - cron: '*/30 * * * *' 
+  workflow_dispatch: # Cho phép bấm nút chạy tay để test
+
+jobs:
+  run-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Auto Job Script
+        env:
+          # Đọc biến môi trường từ Secrets
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          HISTORY_SHEET_ID: ${{ secrets.HISTORY_SHEET_ID }}
+        run: |
+          python auto_job.py
