@@ -15,7 +15,7 @@ from collections import defaultdict
 from st_copy_to_clipboard import st_copy_to_clipboard
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Kinkin Manager (V30 - Live Log)", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Kinkin Manager (V31 - Strict Sync)", layout="wide", page_icon="🛡️")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -171,9 +171,7 @@ def check_login():
     if "auto_key" in st.query_params:
         key = st.query_params["auto_key"]
         if key in AUTHORIZED_USERS:
-            st.session_state['logged_in'] = True
-            st.session_state['current_user_id'] = AUTHORIZED_USERS[key]
-            return True
+            st.session_state['logged_in'] = True; st.session_state['current_user_id'] = AUTHORIZED_USERS[key]; return True
     if st.session_state['logged_in']: return True
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
@@ -262,22 +260,25 @@ def fetch_data_v2(row_config, creds):
         return df, sheet_id, status_msg
     return None, sheet_id, "Không lấy được dữ liệu"
 
-def get_row_ranges_to_delete(wks, keys_to_delete):
-    """Tìm các dòng cần xóa mà không cần load toàn bộ data vào DF"""
+def get_rows_to_delete_dynamic(wks, keys_to_delete, log_container):
+    """Tìm dòng xóa dựa trên tên cột thực tế trong sheet"""
     all_values = wks.get_all_values()
     if not all_values: return []
     
     headers = all_values[0]
+    
+    # Tìm index chính xác của 3 cột hệ thống trong file thực tế
     try:
         idx_link = headers.index(SYS_COL_LINK)
         idx_sheet = headers.index(SYS_COL_SHEET)
         idx_month = headers.index(SYS_COL_MONTH)
-    except ValueError:
+    except ValueError as e:
+        if log_container: log_container.warning(f"⚠️ Không tìm thấy đủ 3 cột hệ thống trong Header. Có thể đây là file mới hoặc Header bị đổi.")
         return [] 
         
     rows_to_delete = []
-    # Duyệt qua từng dòng để tìm key khớp
-    for i, row in enumerate(all_values[1:], start=2): # Data bắt đầu từ dòng 2
+    for i, row in enumerate(all_values[1:], start=2): 
+        # Đảm bảo row đủ dài
         l = row[idx_link] if len(row) > idx_link else ""
         s = row[idx_sheet] if len(row) > idx_sheet else ""
         m = row[idx_month] if len(row) > idx_month else ""
@@ -286,31 +287,20 @@ def get_row_ranges_to_delete(wks, keys_to_delete):
     return rows_to_delete
 
 def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
-    """Xóa dòng theo lô để tối ưu API"""
     if not row_indices: return
     row_indices.sort(reverse=True)
-    
     ranges = []
     if len(row_indices) > 0:
         start = row_indices[0]; end = start
         for r in row_indices[1:]:
             if r == start - 1: start = r
-            else:
-                ranges.append((start, end))
-                start = r; end = r
+            else: ranges.append((start, end)); start = r; end = r
         ranges.append((start, end))
     
     requests = []
     for start, end in ranges:
         requests.append({
-            "deleteDimension": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "dimension": "ROWS",
-                    "startIndex": start - 1,
-                    "endIndex": end
-                }
-            }
+            "deleteDimension": {"range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": start - 1, "endIndex": end}}
         })
     
     batch_size = 100
@@ -320,74 +310,96 @@ def batch_delete_rows(sh, sheet_id, row_indices, log_container=None):
         sh.batch_update({'requests': requests[i:i+batch_size]})
         time.sleep(1)
 
-def write_smart_v2_surgical(tasks_list, target_link, target_sheet_name, creds, log_container):
-    # [V30] LIVE LOGGING INCLUDED
+def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_container):
+    # [V31] STRICT COLUMN MAPPING
     try:
         target_id = extract_id(target_link)
         if not target_id: return False, "Link đích lỗi", {}
         sh = get_sh_with_retry(creds, target_id)
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
         
-        log_container.write(f"📂 Đang mở file đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
+        log_container.write(f"📂 Mở: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
         try: wks = sh.worksheet(real_sheet_name)
         except: 
             wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
-            log_container.write("✨ Đã tạo Sheet mới.")
+            log_container.write("✨ Tạo sheet mới.")
         
         # 1. Gom dữ liệu MỚI
         df_new_all = pd.DataFrame()
-        log_container.write("📦 Đang gom dữ liệu...")
         for df, src_link in tasks_list:
             df_new_all = pd.concat([df_new_all, df], ignore_index=True)
             
         if df_new_all.empty: return True, "Không có data mới", {}
 
-        # 2. Tạo Key cần xóa
-        keys_to_delete = set(zip(df_new_all[SYS_COL_LINK], df_new_all[SYS_COL_SHEET], df_new_all[SYS_COL_MONTH]))
+        # 2. XỬ LÝ HEADER (QUAN TRỌNG NHẤT)
+        existing_headers = wks.row_values(1)
         
-        # 3. Tìm dòng cần xóa
-        log_container.write("🔍 Đang quét tìm dữ liệu cũ cần xóa...")
-        rows_to_del = get_row_ranges_to_delete(wks, keys_to_delete)
-        log_container.write(f"🛑 Tìm thấy {len(rows_to_del)} dòng cũ cần loại bỏ.")
-        
-        # 4. Thực hiện XÓA
-        if rows_to_del:
-            batch_delete_rows(sh, wks.id, rows_to_del, log_container)
-            log_container.write("✅ Đã xóa xong dữ liệu cũ.")
-            
-        # 5. Thực hiện NỐI (Append)
-        log_container.write(f"🚀 Đang ghi {len(df_new_all)} dòng mới xuống cuối Sheet...")
-        
-        if wks.row_count == 0 or not wks.get_values("A1:A1"):
-             set_with_dataframe(wks, df_new_all, row=1, col=1)
-             start_row_new = 2
+        if not existing_headers:
+            # Nếu Sheet chưa có Header -> Lấy Header của DF làm chuẩn
+            final_headers = df_new_all.columns.tolist()
+            wks.update(range_name="A1", values=[final_headers])
+            existing_headers = final_headers
+            log_container.write("🆕 Khởi tạo Header mới.")
         else:
-             existing_data = wks.get_all_values()
-             start_row_new = len(existing_data) + 1
-             
-             chunk_size = 5000
-             new_vals = df_new_all.fillna('').values.tolist()
-             total_chunks = len(new_vals) // chunk_size + 1
-             
-             for i in range(0, len(new_vals), chunk_size):
-                 log_container.write(f"⏳ Đang ghi gói {i//chunk_size + 1}/{total_chunks}...")
-                 wks.append_rows(new_vals[i:i+chunk_size], value_input_option='USER_ENTERED')
-                 time.sleep(1)
+            # Nếu Sheet đã có Header -> Kiểm tra xem có thiếu 3 cột hệ thống không
+            updated_headers = existing_headers.copy()
+            needed_cols = [SYS_COL_LINK, SYS_COL_SHEET, SYS_COL_MONTH]
+            added = False
+            for col in needed_cols:
+                if col not in updated_headers:
+                    updated_headers.append(col)
+                    added = True
+            
+            if added:
+                wks.update(range_name="A1", values=[updated_headers])
+                existing_headers = updated_headers
+                log_container.write("➕ Đã bổ sung 3 cột hệ thống vào Header.")
 
-        # 6. Tính Range trả về Config
+        # 3. ĐỒNG BỘ CỘT CỦA DATAFRAME THEO SHEET (CHỐNG LỆCH CỘT)
+        # Chỉ giữ lại các cột có trong Header của Sheet, và sắp xếp đúng thứ tự đó
+        df_aligned = pd.DataFrame()
+        for col in existing_headers:
+            if col in df_new_all.columns:
+                df_aligned[col] = df_new_all[col]
+            else:
+                df_aligned[col] = "" # Nếu thiếu thì điền rỗng, không để lỗi
+        
+        # 4. Tìm và Xóa dữ liệu cũ
+        keys_to_delete = set(zip(df_new_all[SYS_COL_LINK], df_new_all[SYS_COL_SHEET], df_new_all[SYS_COL_MONTH]))
+        log_container.write("🔍 Đang tìm dữ liệu cũ...")
+        rows_to_del = get_rows_to_delete_dynamic(wks, keys_to_delete, log_container)
+        
+        if rows_to_del:
+            log_container.write(f"✂️ Xóa {len(rows_to_del)} dòng cũ...")
+            batch_delete_rows(sh, wks.id, rows_to_del, log_container)
+            
+        # 5. Ghi dữ liệu mới (Append đúng chuẩn)
+        log_container.write(f"🚀 Đang ghi {len(df_aligned)} dòng...")
+        
+        # Lấy lại tất cả dữ liệu để tìm dòng cuối chính xác (vì vừa xóa xong)
+        all_vals = wks.get_all_values()
+        next_row = len(all_vals) + 1
+        
+        chunk_size = 5000
+        new_vals = df_aligned.fillna('').values.tolist()
+        
+        for i in range(0, len(new_vals), chunk_size):
+            chunk = new_vals[i:i+chunk_size]
+            wks.append_rows(chunk, value_input_option='USER_ENTERED')
+            time.sleep(1)
+
+        # 6. Tính Range
         range_map = {}
-        current_pointer = start_row_new
+        current_pointer = next_row
         for df, src_link in tasks_list:
             count = len(df)
             end_pointer = current_pointer + count - 1
             range_map[(src_link, df[SYS_COL_SHEET].iloc[0])] = f"{current_pointer} - {end_pointer}"
             current_pointer += count
 
-        log_container.write("🎉 Hoàn tất quy trình ghi!")
-        return True, f"Đã cập nhật (Xóa {len(rows_to_del)}, Thêm {len(df_new_all)})", range_map
+        return True, f"Đã cập nhật chuẩn Header ({len(df_aligned)} dòng)", range_map
 
     except Exception as e: 
-        log_container.error(f"❌ Lỗi Ghi: {str(e)}")
         return False, f"Lỗi Ghi: {str(e)}", {}
 
 # --- SYSTEM LOGS ---
@@ -409,10 +421,8 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
     
     log_user_action(creds, user_id, f"Chạy Job: {block_name_run}", "Đang chạy...")
     try:
-        # Nhóm các task lại theo File Đích để xử lý 1 thể
         grouped_tasks = defaultdict(list)
         valid_rows = [r for r in rows_to_run if str(r.get(COL_STATUS, '')).strip() == "Chưa chốt & đang cập nhật"]
-        
         if not valid_rows: return True, {}, 0 
 
         for row in valid_rows:
@@ -426,54 +436,36 @@ def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_containe
         time_now = datetime.now(tz_vn).strftime("%d/%m/%Y %H:%M:%S")
         total_rows_all = 0
         
-        # Bắt đầu chạy từng nhóm (Từng file đích)
         for idx, ((target_link, target_sheet), group_rows) in enumerate(grouped_tasks.items()):
-            
-            with status_container.expander(f"🔄 Đang xử lý File Đích {idx+1}: ...{target_link[-10:]}", expanded=True):
-                st.write(f"🎯 Mục tiêu: Sheet '{target_sheet}'")
-                
-                # Bước 1: Tải dữ liệu từ các nguồn
+            with status_container.expander(f"🔄 Xử lý File {idx+1}: ...{target_link[-10:]}", expanded=True):
                 tasks_list = []
                 for i, row in enumerate(group_rows):
                     s_link = row.get(COL_SRC_LINK, '')
-                    s_label = row.get(COL_SRC_SHEET, 'Sheet1')
-                    st.write(f"⬇️ [{i+1}/{len(group_rows)}] Đang tải nguồn: ...{s_link[-10:]} ({s_label})")
-                    
+                    st.write(f"⬇️ Tải nguồn {i+1}: ...{s_link[-10:]}")
                     df, sid, msg = fetch_data_v2(row, creds)
-                    
                     if df is not None:
-                        st.write(f"   ✅ Lấy được {len(df)} dòng.")
                         tasks_list.append((df, s_link)); total_rows_all += len(df)
                     else:
-                        st.error(f"   ❌ Lỗi tải: {msg}")
+                        st.error(f"❌ Lỗi: {msg}")
                         global_results_map[s_link] = ("Lỗi tải", "")
-                        log_entries.append([time_now, row.get(COL_DATA_RANGE), row.get(COL_MONTH), user_id, s_link, target_link, target_sheet, row.get(COL_SRC_SHEET), "Lỗi tải", "0", "", block_name_run])
-                    
                     del df; gc.collect()
 
-                # Bước 2: Ghi vào đích (Surgical Update)
                 if tasks_list:
-                    st.info("⚡ Bắt đầu quy trình cập nhật thông minh...")
-                    # Truyền st (container) vào hàm write để nó in log ra màn hình
-                    success_update, msg_update, range_map = write_smart_v2_surgical(tasks_list, target_link, target_sheet, creds, st)
+                    st.info("⚡ Đang đồng bộ và ghi...")
+                    success_update, msg_update, range_map = write_strict_sync(tasks_list, target_link, target_sheet, creds, st)
                     
-                    if not success_update: 
-                        all_success = False
-                        st.error(f"❌ Ghi thất bại: {msg_update}")
-                    else:
-                        st.success(f"✅ {msg_update}")
+                    if not success_update: st.error(f"❌ {msg_update}"); all_success = False
+                    else: st.success(f"✅ {msg_update}")
 
                     del tasks_list; gc.collect()
 
-                    # Bước 3: Cập nhật kết quả
-                    status_str = "Thành công" if success_update else f"Lỗi: {msg_update}"
                     for row in group_rows:
                         s_link = str(row.get(COL_SRC_LINK, '')).strip()
-                        if s_link not in global_results_map: # Nếu chưa bị lỗi tải
+                        if s_link not in global_results_map:
                             s_sheet = str(row.get(COL_SRC_SHEET, '')).strip()
                             calc_range = range_map.get((s_link, s_sheet), "")
-                            global_results_map[s_link] = (status_str, calc_range)
-                            log_entries.append([time_now, row.get(COL_DATA_RANGE), row.get(COL_MONTH), user_id, s_link, target_link, target_sheet, row.get(COL_SRC_SHEET), status_str, "", calc_range, block_name_run])
+                            global_results_map[s_link] = ("Thành công" if success_update else "Lỗi", calc_range)
+                            log_entries.append([time_now, row.get(COL_DATA_RANGE), row.get(COL_MONTH), user_id, s_link, target_link, target_sheet, row.get(COL_SRC_SHEET), "Thành công", "", calc_range, block_name_run])
         
         write_detailed_log(creds, log_entries)
         log_user_action(creds, user_id, f"Hoàn tất Job: {block_name_run}", f"Tổng {total_rows_all} dòng")
@@ -556,7 +548,7 @@ def main_ui():
     if not check_login(): return
     user_id = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("⚡ Kinkin (V30 - Live Log)"); st.caption(f"User: {user_id}")
+    with c1: st.title("⚡ Kinkin (V31 - Strict Sync)"); st.caption(f"User: {user_id}")
     with c2: 
         with st.popover("Tiện ích"): st.code(BOT_EMAIL_DISPLAY); st_copy_to_clipboard(BOT_EMAIL_DISPLAY, "Copy Email")
 
@@ -617,7 +609,7 @@ def main_ui():
             COL_LOG_ROW: st.column_config.TextColumn("Dòng dữ liệu", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None, COL_NOTE: None
         },
-        use_container_width=True, num_rows="dynamic", key="editor_v30"
+        use_container_width=True, num_rows="dynamic", key="editor_v31"
     )
 
     if edited_df[COL_COPY_FLAG].any():
@@ -637,11 +629,9 @@ def main_ui():
             rows_to_run = [r for r in all_rows if str(r.get(COL_STATUS, '')).strip() == "Chưa chốt & đang cập nhật"]
             if not rows_to_run: st.warning("Không có dòng nào 'Chưa chốt'."); st.stop()
             
-            # [LOG CONTAINER]
             log_container = st.status("🚀 Đang khởi động tiến trình...", expanded=True)
             ok, res_map, total = process_pipeline_mixed(rows_to_run, user_id, sel_block, log_container)
             
-            # Update UI
             for i, r in edited_df.iterrows():
                 lnk = str(r.get(COL_SRC_LINK, '')).strip()
                 if lnk in res_map:
