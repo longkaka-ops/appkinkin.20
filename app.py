@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V50 - Persistence)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Manager (V51 - Bug Fix)", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -387,7 +387,7 @@ def write_strict_sync(tasks_list, target_link, target_sheet_name, creds, log_con
         if not target_id: return False, "Link lỗi", {}
         sh = get_sh_with_retry(creds, target_id)
         real_sheet_name = str(target_sheet_name).strip() or "Tong_Hop_Data"
-        log_container.write(f"📂 Đích: ...{target_link[-10:]} | {real_sheet_name}")
+        log_container.write(f"📂 Đích: ...{target_link[-10:]} | Sheet: {real_sheet_name}")
         try: wks = sh.worksheet(real_sheet_name)
         except: wks = sh.add_worksheet(title=real_sheet_name, rows=1000, cols=20)
         
@@ -460,7 +460,11 @@ def check_permissions_ui(rows, creds, container):
 
 def process_pipeline_mixed(rows_to_run, user_id, block_name_run, status_container):
     creds = get_creds()
-    if not acquire_lock(creds, user_id): return False, "Hệ thống bận", 0
+    # [V51 FIX] Trả về {} thay vì string nếu lock fail
+    if not acquire_lock(creds, user_id): 
+        st.error("⚠️ Hệ thống đang bận (Có người khác đang chạy). Vui lòng thử lại sau 1-2 phút.")
+        return False, {}, 0
+        
     log_user_action(creds, user_id, f"Chạy: {block_name_run}", "Running")
     try:
         grouped = defaultdict(list)
@@ -576,7 +580,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V50 - Persistence)"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin (V51 - Bug Fix)"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -693,7 +697,7 @@ def main_ui():
             COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None, COL_MODE: None 
-        }, use_container_width=True, num_rows="dynamic", key="edt_v50"
+        }, use_container_width=True, num_rows="dynamic", key="edt_v51"
     )
 
     if edt_df[COL_COPY_FLAG].any():
@@ -714,10 +718,16 @@ def main_ui():
             if not rows: st.warning("No rows"); st.stop()
             st_cont = st.status("🚀 Running...", expanded=True)
             ok, res, tot = process_pipeline_mixed(rows, uid, sel_blk, st_cont)
-            for i, r in edt_df.iterrows():
-                if i in res: edt_df.at[i, COL_RESULT] = res[i][0]; edt_df.at[i, COL_LOG_ROW] = res[i][1]
-            save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
-            st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False)
+            
+            # [V51 FIX] Kiểm tra res có phải dict không trước khi loop
+            if isinstance(res, dict):
+                for i, r in edt_df.iterrows():
+                    if i in res: edt_df.at[i, COL_RESULT] = res[i][0]; edt_df.at[i, COL_LOG_ROW] = res[i][1]
+                save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
+                st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False)
+            else:
+                st_cont.update(label="Hệ thống bận!", state="error", expanded=False)
+                
             st.cache_data.clear(); time.sleep(1); st.rerun()
     
     with c3:
