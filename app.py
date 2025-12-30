@@ -771,7 +771,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V70 - Final Clean)", help="V70: Clean Code"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 Kinkin Tool Google Sheet To Google Sheet 2.0", help="V70: Clean Code"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -994,5 +994,6 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
