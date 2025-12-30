@@ -878,15 +878,26 @@ def main_ui():
         st.rerun()
 
     st.divider(); c1, c2, c3, c4 = st.columns(4)
+    # ... (Phần code phía trên của main_ui giữ nguyên) ...
+
+    # === KHU VỰC CÁC NÚT CHỨC NĂNG (V75 - Added Run All) ===
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+
+    # 1. Nút Chạy Lẻ (Hiện tại)
     with c1:
-        if st.button("▶️ RUN BLOCK", type="primary"):
+        if st.button("▶️ RUN BLOCK", type="primary", use_container_width=True):
+            # Lưu cấu hình hiện tại trước khi chạy
             save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
+            
             rows = []
             for i, r in edt_df.iterrows():
                 if str(r.get(COL_STATUS,'')).strip() == "Chưa chốt & đang cập nhật":
                     r_dict = r.to_dict(); r_dict['_index'] = i; rows.append(r_dict)
+            
             if not rows: st.warning("Không có dòng nào để chạy."); st.stop()
-            st_cont = st.status("🚀 Running...", expanded=True)
+            
+            st_cont = st.status(f"🚀 Đang chạy {sel_blk}...", expanded=True)
             ok, res, tot = process_pipeline_mixed(rows, uid, sel_blk, st_cont)
             
             if isinstance(res, dict):
@@ -896,16 +907,84 @@ def main_ui():
                         edt_df.at[i, COL_LOG_ROW] = res[i][1]
                 save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
                 st_cont.update(label=f"Done! {tot} rows.", state="complete", expanded=False)
-            else: st_cont.update(label="Hệ thống bận!", state="error", expanded=False)
-                
+            else:
+                st_cont.update(label="Hệ thống bận!", state="error", expanded=False)
+            
             st.cache_data.clear(); time.sleep(1); st.rerun()
-    
+
+    # 2. Nút Chạy Tất Cả (Mới - V75)
+    with c2:
+        if st.button("⏩ RUN ALL BLOCKS", use_container_width=True):
+            # Lấy toàn bộ danh sách Block
+            full_df = st.session_state['df_full_config']
+            all_blocks = full_df[COL_BLOCK_NAME].unique().tolist()
+            
+            if not all_blocks: st.warning("Không có khối nào."); st.stop()
+
+            # Tạo khung hiển thị tiến trình tổng
+            main_status = st.status("🚀 Khởi động chuỗi xử lý...", expanded=True)
+            total_processed = 0
+            
+            # Vòng lặp chạy tuần tự từng khối
+            for idx, blk in enumerate(all_blocks):
+                main_status.write(f"⏳ [{idx+1}/{len(all_blocks)}] Đang xử lý: **{blk}**...")
+                
+                # 1. Lọc lấy dữ liệu của Block hiện tại
+                blk_df = full_df[full_df[COL_BLOCK_NAME] == blk].copy().reset_index(drop=True)
+                
+                # 2. Lọc các dòng Active
+                rows_to_run = []
+                for i, r in blk_df.iterrows():
+                    if str(r.get(COL_STATUS,'')).strip() == "Chưa chốt & đang cập nhật":
+                        r_dict = r.to_dict()
+                        # Lưu ý: Index này là index cục bộ của blk_df, dùng để map lại kết quả sau khi chạy
+                        r_dict['_index'] = i 
+                        rows_to_run.append(r_dict)
+                
+                if not rows_to_run:
+                    main_status.write(f"⚪ {blk}: Không có dòng active. Bỏ qua.")
+                    continue
+
+                # 3. Gọi hàm xử lý (Tái sử dụng hàm Core)
+                # Dùng một expander con để không làm rối UI chính
+                ok, res, tot = process_pipeline_mixed(rows_to_run, uid, blk, main_status)
+                total_processed += tot
+
+                # 4. Cập nhật kết quả vào DataFrame cục bộ và LƯU NGAY
+                if isinstance(res, dict):
+                    has_change = False
+                    for i, r in blk_df.iterrows():
+                        if i in res:
+                            blk_df.at[i, COL_RESULT] = res[i][0]
+                            blk_df.at[i, COL_LOG_ROW] = res[i][1]
+                            has_change = True
+                    
+                    if has_change:
+                        save_block_config_to_sheet(blk_df, blk, creds, uid)
+                        main_status.write(f"✅ {blk}: Xong ({tot} dòng). Đã lưu.")
+                    else:
+                        main_status.write(f"⚠️ {blk}: Chạy xong nhưng không có phản hồi.")
+                else:
+                    main_status.write(f"❌ {blk}: Lỗi hệ thống (Lock).")
+
+            main_status.update(label=f"🎉 Hoàn tất toàn bộ! Tổng {total_processed} dòng.", state="complete", expanded=False)
+            st.cache_data.clear()
+            st.toast("Đã chạy xong tất cả các khối!", icon="🏁")
+            time.sleep(2)
+            st.rerun()
+
+    # 3. Nút Quét Quyền
     with c3:
-        if st.button("🔍 Quét Quyền"):
+        if st.button("🔍 Quét Quyền", use_container_width=True):
             with st.status("Checking...", expanded=True) as st_chk: check_permissions_ui(edt_df.to_dict('records'), creds, st_chk, uid)
     
+    # 4. Nút Lưu
     with c4:
-        if st.button("💾 Save"): save_block_config_to_sheet(edt_df, sel_blk, creds, uid); st.rerun()
+        if st.button("💾 Save Config", use_container_width=True): 
+            save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
+            st.rerun()
+
+    # ... (Phần Log phía dưới giữ nguyên) ...
 
     flush_logs(creds, force=True)
     st.divider(); st.caption("Logs")
@@ -915,4 +994,5 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
