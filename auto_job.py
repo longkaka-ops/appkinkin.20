@@ -35,8 +35,8 @@ COL_HEADER = "Lay_Header"
 
 SCHED_COL_BLOCK = "Block_Name"
 SCHED_COL_TYPE = "Loai_Lich"
-SCHED_COL_VAL1 = "Thong_So_Chinh" 
-SCHED_COL_VAL2 = "Thong_So_Phu"   
+SCHED_COL_VAL1 = "Thong_So_Chinh" # Giờ (08:00) hoặc Số phút (50)
+SCHED_COL_VAL2 = "Thong_So_Phu"   # Ngày (4,8) hoặc Thứ (T2,T3)
 
 SYS_COL_LINK = "Link file nguồn"
 SYS_COL_SHEET = "Sheet nguồn"
@@ -44,7 +44,7 @@ SYS_COL_MONTH = "Tháng"
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
-# Khoảng thời gian nhìn lại (phút). 
+# Khoảng thời gian nhìn lại (phút) để bắt dính lịch khi GitHub bị trễ
 LOOKBACK_MINUTES = 18 
 
 # ==========================================
@@ -62,22 +62,18 @@ def get_creds():
         if os.path.exists("secrets.json"):
             return service_account.Credentials.from_service_account_file("secrets.json", scopes=SCOPES)
             
-        print("❌ Lỗi: Không tìm thấy Credentials (GCP_SERVICE_ACCOUNT).")
+        print("❌ Lỗi: Không tìm thấy Credentials.")
         return None
     except Exception as e:
         print(f"❌ Lỗi Auth: {e}")
         return None
 
 def get_history_sheet_id():
-    # Lấy ID thô từ biến môi trường
     raw_id = os.environ.get("HISTORY_SHEET_ID")
     if not raw_id: return None
-    
-    # [V72 FIX] Tự động trích xuất ID nếu người dùng lỡ điền cả Link
     extracted = extract_id(raw_id)
-    if extracted:
-        return extracted
-    return raw_id # Nếu không phải link thì trả về nguyên gốc
+    if extracted: return extracted
+    return raw_id
 
 def safe_api_call(func, *args, **kwargs):
     max_retries = 5
@@ -96,20 +92,16 @@ def safe_api_call(func, *args, **kwargs):
 
 def get_sh_with_retry(creds, sheet_id):
     gc_client = gspread.authorize(creds)
-    # [V72] In ra ID đang cố kết nối để debug (ẩn bớt ký tự)
     masked_id = sheet_id[:5] + "..." + sheet_id[-5:] if sheet_id and len(sheet_id) > 10 else "N/A"
     print(f"🔗 Connecting to Master Sheet ID: {masked_id}")
     return safe_api_call(gc_client.open_by_key, sheet_id)
 
 def extract_id(url):
     if not isinstance(url, str): return None
-    # Xử lý trường hợp URL đầy đủ
     if "docs.google.com" in url:
         try: 
-            # Tìm đoạn giữa /d/ và /
             match = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
-            if match:
-                return match.group(1)
+            if match: return match.group(1)
         except: return None
     return None
 
@@ -330,54 +322,85 @@ def write_data(tasks_list, target_link, target_sheet_name, creds):
     except Exception as e: return False, f"Write Error: {str(e)}", {}
 
 # ==========================================
-# 4. SCHEDULER LOGIC (V71 - SMART CATCH-UP)
+# 4. SCHEDULER LOGIC (V74 - STANDARD LOGIC)
 # ==========================================
-def is_time_match(sched_time_str, now_dt):
+def is_time_in_window(target_time_str, now_dt):
+    """
+    Kiểm tra xem target_time (HH:MM) có xuất hiện trong khoảng 
+    [now - 18 phút, now] hay không.
+    Hàm này dùng chung cho Chạy Ngày, Tuần, Tháng.
+    """
     try:
-        h_set, m_set = map(int, sched_time_str.split(":"))
+        h_set, m_set = map(int, target_time_str.strip().split(":"))
+        # Tạo mốc thời gian chạy của ngày hôm nay
         sched_dt = now_dt.replace(hour=h_set, minute=m_set, second=0, microsecond=0)
+        
+        # Tính độ lệch: (Hiện tại - Mốc cài đặt)
         diff = (now_dt - sched_dt).total_seconds() / 60 
-        if 0 <= diff <= LOOKBACK_MINUTES: return True
+        
+        # Nếu độ lệch từ 0 đến 18 phút -> Có nghĩa là vừa mới qua giờ chạy -> Chạy
+        if 0 <= diff <= LOOKBACK_MINUTES:
+            return True
         return False
     except: return False
 
-def is_time_to_run_smart(row, now_dt):
+def is_time_to_run_standard(row, now_dt):
     sched_type = str(row.get(SCHED_COL_TYPE, "")).strip()
-    val1 = str(row.get(SCHED_COL_VAL1, "")).strip()
-    val2 = str(row.get(SCHED_COL_VAL2, "")).strip()
+    val1 = str(row.get(SCHED_COL_VAL1, "")).strip() # Giờ (08:00) hoặc Phút (50)
+    val2 = str(row.get(SCHED_COL_VAL2, "")).strip() # Ngày (4,8) hoặc Thứ (T2,T3)
 
     if sched_type == "Không chạy": return False
 
+    # Mapping cho Thứ và Ngày
     week_map = {0: "T2", 1: "T3", 2: "T4", 3: "T5", 4: "T6", 5: "T7", 6: "CN"}
     current_wday_str = week_map[now_dt.weekday()]
     current_day_str = str(now_dt.day)
 
+    # 1. Chạy theo phút
     if sched_type == "Chạy theo phút":
         try:
             interval = int(val1)
-            if interval <= 0: return False
+            if interval < 30: interval = 30 # Min 30p theo yêu cầu
+            
+            # Tính tổng số phút trong ngày hiện tại
             curr_total_min = now_dt.hour * 60 + now_dt.minute
+            
+            # Tính thời điểm quá khứ (lùi lại để check)
             prev_total_min = curr_total_min - LOOKBACK_MINUTES
+            
+            # Logic: Nếu số lần chia chẵn cho interval thay đổi -> Đã qua mốc
+            # Ví dụ: Interval 50. Lúc 08:10 (490p) -> 490//50 = 9
+            # Lúc 08:25 (505p) -> 505//50 = 10 -> Nhảy số -> Chạy (mốc 500 - 08:20)
+            
             count_curr = curr_total_min // interval
             count_prev = prev_total_min // interval
-            if count_curr > count_prev: return True
+            
+            if count_curr > count_prev:
+                return True
         except: pass
 
+    # 2. Hàng ngày: Chỉ check giờ (val1)
     elif sched_type == "Hàng ngày":
-        return is_time_match(val1, now_dt)
+        return is_time_in_window(val1, now_dt)
 
+    # 3. Hàng tuần: Check Thứ (val2) + Giờ (val1)
     elif sched_type == "Hàng tuần":
+        # Tách danh sách thứ: "T2, T3" -> ["T2", "T3"]
         target_days = [x.strip() for x in val2.split(",")]
-        if current_wday_str in target_days: return is_time_match(val1, now_dt)
+        if current_wday_str in target_days:
+            return is_time_in_window(val1, now_dt)
 
+    # 4. Hàng tháng: Check Ngày (val2) + Giờ (val1)
     elif sched_type == "Hàng tháng":
+        # Tách danh sách ngày: "4, 8" -> ["4", "8"]
         target_dates = [x.strip() for x in val2.split(",")]
-        if current_day_str in target_dates: return is_time_match(val1, now_dt)
+        if current_day_str in target_dates:
+            return is_time_in_window(val1, now_dt)
 
     return False
 
 def run_auto_job():
-    print("🚀 Starting Auto Job (V72 - ID Auto Fix)...")
+    print("🚀 Starting Auto Job (V74 - Standard Logic)...")
     
     creds = get_creds()
     if not creds: return
@@ -388,7 +411,7 @@ def run_auto_job():
 
     sh_master = get_sh_with_retry(creds, master_id)
     if not sh_master:
-        print("❌ Không thể mở Sheet Master. Kiểm tra Quyền (Share) hoặc ID.")
+        print("❌ Không thể mở Sheet Master.")
         return
     
     try:
@@ -410,7 +433,8 @@ def run_auto_job():
     if SCHED_COL_BLOCK in df_sched.columns:
         for _, row in df_sched.iterrows():
             blk = str(row.get(SCHED_COL_BLOCK, ""))
-            if is_time_to_run_smart(row, now):
+            # [V74] Sử dụng hàm check chuẩn
+            if is_time_to_run_standard(row, now):
                 print(f"⚡ MATCH: {blk}")
                 blocks_to_run.append(blk)
     
