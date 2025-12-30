@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V70 - Clean Fix)", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Kinkin TOOL 2.0 GG TO GG", layout="wide", page_icon="🚀")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -994,6 +994,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
