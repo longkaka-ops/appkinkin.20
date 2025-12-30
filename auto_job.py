@@ -45,7 +45,7 @@ SYS_COL_MONTH = "Tháng"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # Khoảng thời gian nhìn lại (phút). 
-LOOKBACK_MINUTES = 12 
+LOOKBACK_MINUTES = 18 
 
 # ==========================================
 # 2. CORE UTILS (SERVER SIDE)
