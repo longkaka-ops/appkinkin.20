@@ -856,15 +856,15 @@ def main_ui():
         column_config={
             COL_COPY_FLAG: st.column_config.CheckboxColumn("Copy", width="small", default=False),
             "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
-            COL_STATUS: st.column_config.SelectboxColumn("Status", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
-            COL_DATA_RANGE: st.column_config.TextColumn("Range", width="small", default="Lấy hết"),
-            COL_MONTH: st.column_config.TextColumn("Month", width="small"),
-            COL_SRC_LINK: st.column_config.LinkColumn("Src Link", width="medium"), 
-            COL_TGT_LINK: st.column_config.LinkColumn("Tgt Link", width="medium"),
-            COL_FILTER: st.column_config.TextColumn("Filter", width="medium"),
-            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), 
-            COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
-            COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
+            COL_STATUS: st.column_config.SelectboxColumn("Trạng Thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
+            COL_DATA_RANGE: st.column_config.TextColumn("Vùng Lấy", width="small", default="Lấy hết"),
+            COL_MONTH: st.column_config.TextColumn("Tháng", width="small"),
+            COL_SRC_LINK: st.column_config.LinkColumn("Link Nguồn", width="medium"), 
+            COL_TGT_LINK: st.column_config.LinkColumn("Link Đích", width="medium"),
+            COL_FILTER: st.column_config.TextColumn("Bộ lọc", width="medium"),
+            COL_HEADER: st.column_config.CheckboxColumn("Có lấy header không?", default=False), 
+            COL_RESULT: st.column_config.TextColumn("Kết Quả", disabled=True),
+            COL_LOG_ROW: st.column_config.TextColumn("Log Dòng Dữ Liệu", disabled=True),
             COL_BLOCK_NAME: None 
         }, use_container_width=True, num_rows="dynamic", key="edt_v70"
     )
@@ -886,7 +886,7 @@ def main_ui():
 
     # 1. Nút Chạy Lẻ (Hiện tại)
     with c1:
-        if st.button("▶️ RUN BLOCK", type="primary", use_container_width=True):
+        if st.button("▶️ Chạy Khối", type="primary", use_container_width=True):
             # Lưu cấu hình hiện tại trước khi chạy
             save_block_config_to_sheet(edt_df, sel_blk, creds, uid)
             
@@ -914,7 +914,7 @@ def main_ui():
 
     # 2. Nút Chạy Tất Cả (Mới - V75)
     with c2:
-        if st.button("⏩ RUN ALL BLOCKS", use_container_width=True):
+        if st.button("⏩ Chạy tất cả các khối", use_container_width=True):
             # Lấy toàn bộ danh sách Block
             full_df = st.session_state['df_full_config']
             all_blocks = full_df[COL_BLOCK_NAME].unique().tolist()
@@ -994,6 +994,7 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
 
 
