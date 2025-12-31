@@ -17,7 +17,7 @@ from st_copy_to_clipboard import st_copy_to_clipboard
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==========================================
-st.set_page_config(page_title="Kinkin Manager (V78 - Final)", layout="wide", page_icon="💎")
+st.set_page_config(page_title="Kinkin Tool 2.0", layout="wide", page_icon="💎")
 
 AUTHORIZED_USERS = {
     "admin2025": "Admin_Master",
@@ -800,7 +800,7 @@ def main_ui():
     if not check_login(): return
     uid = st.session_state['current_user_id']; creds = get_creds()
     c1, c2 = st.columns([3, 1])
-    with c1: st.title("💎 Kinkin (V78 - Final)", help="V78: Full Features"); st.caption(f"User: {uid}")
+    with c1: st.title("💎 TOOL 2.0 lấy dữ liệu from GG sheet to GG sheet ", help="V78: Full Features"); st.caption(f"User: {uid}")
     with c2: st.code(BOT_EMAIL_DISPLAY)
 
     with st.sidebar:
@@ -890,14 +890,14 @@ def main_ui():
         column_config={
             COL_COPY_FLAG: st.column_config.CheckboxColumn("Copy", width="small", default=False),
             "STT": st.column_config.NumberColumn("STT", width="small", disabled=True),
-            COL_STATUS: st.column_config.SelectboxColumn("Status", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
-            COL_DATA_RANGE: st.column_config.TextColumn("Range", width="small", default="Lấy hết"),
-            COL_MONTH: st.column_config.TextColumn("Month", width="small"),
-            COL_SRC_LINK: st.column_config.LinkColumn("Src Link", width="medium"), 
-            COL_TGT_LINK: st.column_config.LinkColumn("Tgt Link", width="medium"),
-            COL_FILTER: st.column_config.TextColumn("Filter", width="medium"),
-            COL_HEADER: st.column_config.CheckboxColumn("Header?", default=False), 
-            COL_RESULT: st.column_config.TextColumn("Result", disabled=True),
+            COL_STATUS: st.column_config.SelectboxColumn("Trạng Thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], required=True),
+            COL_DATA_RANGE: st.column_config.TextColumn("Vùng Lấy Dữ Liệu", width="small", default="Lấy hết"),
+            COL_MONTH: st.column_config.TextColumn("Tháng", width="small"),
+            COL_SRC_LINK: st.column_config.LinkColumn("Link Nguồn Dữ Liệu", width="medium"), 
+            COL_TGT_LINK: st.column_config.LinkColumn("Link Đích Dữ liệu", width="medium"),
+            COL_FILTER: st.column_config.TextColumn("Bộ Lọc", width="medium"),
+            COL_HEADER: st.column_config.CheckboxColumn("Có lấy tiêu đề không?", default=False), 
+            COL_RESULT: st.column_config.TextColumn("Kết Quả", disabled=True),
             COL_LOG_ROW: st.column_config.TextColumn("Log Row", disabled=True),
             COL_BLOCK_NAME: None 
         }, use_container_width=True, num_rows="dynamic", key="edt_v78"
@@ -978,3 +978,4 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
